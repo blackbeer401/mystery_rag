@@ -33,6 +33,7 @@ def get_answer_icon(user_input):
         return "⚠️"
 
     return "📁"
+
 def stream_text(text, animate=True, delay=0.02):
 
     # 과거에 이미 출력된 메시지는 즉시 표시
