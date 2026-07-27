@@ -98,13 +98,16 @@ if not st.session_state.intro_played:
 # 사용자 입력
 user_input = st.chat_input("조사 내용이나 질문을 입력하세요.")
 
-
 if user_input:
+    # 사용자 메시지 저장
     st.session_state.messages.append({
         "role": "user",
         "content": user_input
     })
 
+    # 사용자 메시지 즉시 출력
+    with st.chat_message("user", avatar="🕵️"):
+        st.write(user_input)
     # 1. 평소 조사 상태
     if st.session_state.game_phase == "investigation":
 
