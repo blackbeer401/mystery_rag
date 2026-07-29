@@ -4,12 +4,15 @@ from langchain_chroma import Chroma
 from openai import OpenAI
 import json
 import time
+from pathlib import Path
 
 from game_state import (
     add_investigation,
     get_investigated,
+    get_unlocked_documents,
     show_investigation_log,
-    show_investigation_status
+    show_investigation_status,
+    get_chapter_action_block
 )
 
 load_dotenv()
@@ -26,46 +29,38 @@ def get_start_message():
     """
 
     return """
-## 사건 기록 개방
+## 📋 사건 브리핑
 
-현대 대형 크루즈선에서 승객 **최종인(62세)**이 자신의 객실에서 사망한 채 발견되었습니다.
-
-최종인은 당일 밤 22시 30분에 예정된 업무 미팅에 나타나지 않았고, 연락도 받지 않았습니다. 선내 직원과 보안 담당자가 객실을 확인한 결과, 약 23시 20분 사망한 최종인을 발견했습니다.
-
-현재 정확한 사망 시각과 사건 경위는 확인되지 않았습니다. 사건 당일 최종인과 접촉했거나 갈등이 있었던 인물들의 진술과 동선, 디지털 기록, 법의학 자료를 조사해야 합니다.
+| 구분 | 현재 확인된 내용 |
+|---|---|
+| 피해자 | **최종인, 62세** |
+| 발견 장소 | 최종인의 객실 |
+| 발견 시각 | 약 **23시 20분** |
+| 발견 계기 | 22시 30분 업무 일정 불참 후 연락 두절 |
+| 현재 미확인 | 정확한 사망 시각, 사망 원인, 사건 경위 |
 
 ### 주요 관계자
-- **김동율**: 8년 전 해성호 사고 당시 현장 책임자
-- **김현준**: 최근 최종인과 업무상 갈등이 있었던 인물
-- **강원모**: 8년 전 해성호 사고 관련 업무에 관여한 인물
-- **박소영**: 선상 산업행사 운영 담당자이자 최초 신고 관계자
+
+- **김동율** — 8년 전 해성호 사고 당시 현장 책임자
+- **김현준** — 최근 최종인과 업무상 갈등이 있었던 인물
+- **강원모** — 해성호 사고 관련 업무에 관여한 인물
+- **박소영** — 선상 산업행사 운영 담당자이자 신고 관계자
 
 ### 조사 방법
-기록관 에코에게 자연어로 조사나 질문을 입력하십시오.
+
+기록관 에코에게 자연어로 질문하거나 새로운 조사를 요청할 수 있습니다.
+조사를 완료하면 관련 기록이 해금되고, 이후 질문에서 새 정보가 검색됩니다.
 
 - `피해자의 사망 원인을 조사해봐`
 - `김동율을 인터뷰해봐`
-- `최종인의 마지막 생존 목격자를 조사해줘`
 - `21시 15분 메시지를 포렌식해봐`
-- `현재까지 확보한 증거를 설명해줘`
+- `조사 현황`
 
-새로운 조사를 수행하면 관련 기록이 해금되고, 확보한 기록에 관해 추가 질문할 수 있습니다.
-
-**주의:** 현재 확보된 초기 정보만으로는 특정 인물을 범인으로 판단할 수 없습니다.
-━━━━━━━━━━━━━━━━━━━━━━
+> 현재 정보만으로는 특정 인물을 범인으로 판단할 수 없습니다.
 
 ### 추천 첫 조사
 
-- 피해자의 사망 원인을 조사해봐
-- 김동율을 인터뷰해봐
-- 피해자의 디지털 자료를 포렌식해봐
-- 해성호 사고 기록을 조사해봐
-
-모든 조사를 마쳤다고 판단되면
-
-**범인 지목**
-
-을 입력하여 최종 추리를 진행할 수 있습니다.
+**피해자의 사망 원인을 조사해봐**
 """
 
 # -------------------------
@@ -82,8 +77,43 @@ vectorstore = Chroma(
 )
 
 candidate_retriever = vectorstore.as_retriever(
-    search_kwargs={"k": 10}
+    search_kwargs={"k": 50}
 )
+
+# 권한 필터를 통과한 뒤 재정렬 모델에 보낼 후보 수를 제한한다.
+# k=50은 아직 잠긴 문서가 섞인 공용 DB에서도 허용 문서를 찾기 위한
+# 검색 폭이고, 실제 프롬프트에는 아래 개수만 전달한다.
+MAX_RAG_CANDIDATES = 12
+
+
+INITIAL_DOCUMENTS = {
+    path.name
+    for path in Path("./data/available").glob("*.md")
+}
+
+
+def retrieve_authorized_documents(search_query):
+    """
+    공용 Chroma DB에서 후보를 찾되, 현재 플레이어가 볼 수 있는
+    초기 문서와 직접 해금한 문서만 RAG 후보로 통과시킨다.
+    """
+    allowed_documents = (
+        INITIAL_DOCUMENTS
+        | get_unlocked_documents()
+    )
+
+    candidates = candidate_retriever.invoke(
+        search_query
+    )
+
+    authorized_documents = [
+        document
+        for document in candidates
+        if document.metadata.get("source_file")
+        in allowed_documents
+    ]
+
+    return authorized_documents[:MAX_RAG_CANDIDATES]
 
 # -------------------------
 # 2. Tool 정의
@@ -100,6 +130,10 @@ def archive_investigation():
 
     이미 확보된 자료의 내용을 단순히 묻는 질문에는 사용하지 않는다.
     """
+
+    chapter_block = get_chapter_action_block("archive")
+    if chapter_block:
+        return chapter_block
 
     current_state = get_investigated()
 
@@ -201,6 +235,18 @@ def digital_forensics():
 
     current_state = get_investigated()
 
+    if "DIGITAL_MESSAGE_FORENSICS" not in current_state:
+        chapter_block = get_chapter_action_block(
+            "digital_message"
+        )
+    else:
+        chapter_block = get_chapter_action_block(
+            "digital_deep"
+        )
+
+    if chapter_block:
+        return chapter_block
+
 
     # 1단계
     # 21:15 메시지 포렌식
@@ -261,6 +307,10 @@ def access_log_analysis():
     이 도구를 사용하지 않는다.
     """
 
+    chapter_block = get_chapter_action_block("access")
+    if chapter_block:
+        return chapter_block
+
     current_state = get_investigated()
 
 
@@ -303,6 +353,10 @@ def timeline_alibi_check():
     이미 확보된 특정 시각이나 사실 하나를 단순히 묻는 질문에는
     이 도구를 사용하지 않는다.
     """
+
+    chapter_block = get_chapter_action_block("timeline")
+    if chapter_block:
+        return chapter_block
 
     current_state = get_investigated()
 
@@ -399,6 +453,10 @@ def interview(person: str):
     - 김동율을 인터뷰해봐 → Tool 사용
     - 김동율은 뭐라고 진술했어? → Tool 사용하지 않음
     """
+
+    chapter_block = get_chapter_action_block("interview")
+    if chapter_block:
+        return chapter_block
 
     current_state = get_investigated()
 
@@ -584,6 +642,15 @@ def witness_investigation(target: str):
 
     이미 확보된 목격정보의 내용을 단순히 묻는 질문에는 사용하지 않는다.
     """
+
+    action_name = (
+        "witness_last_alive"
+        if target == "최종인 마지막 생존"
+        else "witness_general"
+    )
+    chapter_block = get_chapter_action_block(action_name)
+    if chapter_block:
+        return chapter_block
 
     current_state = get_investigated()
 
@@ -978,8 +1045,7 @@ def show_ending(accused):
 
 범행 후에는
 사고 자료가 저장된 USB를 회수하고,
-예약 발송 메시지와 출입기록의 허점을 이용해
-사망 시각을 혼란스럽게 만들었습니다.
+자신의 객실로 돌아가 행적을 감추려 했습니다.
 
 그러나
 
@@ -989,6 +1055,10 @@ def show_ending(accused):
 그리고 과거 기록을 하나씩 연결한 결과,
 
 모든 증거는 하나의 결론을 가리키고 있었습니다.
+
+최종인이 생전에 설정한 21:15 예약 메시지는
+결과적으로 초기 사망시각 판단을 흐렸지만,
+포렌식을 통해 실제 생존증거가 아니라는 사실이 확인되었습니다.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1008,6 +1078,11 @@ def show_ending(accused):
 
 강원모는 살인 및 증거인멸 혐의로
 수사기관에 인계되었습니다.
+
+정식 압수수색에서는 강원모의 개인 수하물 안에서
+최종인이 사용하던 USB가 확인되었습니다.
+저장장치의 식별정보와 복원된 파일구조도
+피해자의 기기 기록과 일치했습니다.
 
 또한 해성호 사고 역시
 재조사가 시작되었고,
@@ -1041,76 +1116,10 @@ llm = ChatOpenAI(
 )
 def get_investigation_status():
     """
-    Streamlit 화면에 출력할 현재 조사 현황을 반환한다.
+    완료한 기록과 큰 조사 분야만 보여준다.
+    아직 발견하지 않은 구체적인 조사 항목은 노출하지 않는다.
     """
-
-    investigated = get_investigated()
-
-    investigation_items = [
-        ("FORENSIC_POSTMORTEM", "사망 원인 및 현장 감식"),
-        ("DIGITAL_MESSAGE_FORENSICS", "21시 15분 메시지 포렌식"),
-        ("DIGITAL_USB_TRACE", "USB 사용 흔적 분석"),
-        ("DIGITAL_VICTIM_DEVICE_ACTIVITY", "피해자 기기 활동 분석"),
-
-        ("INTERVIEW_KIMDONGYUL_BASIC", "김동율 기본 인터뷰"),
-        ("INTERVIEW_KIMDONGYUL_DEEP", "김동율 심층 인터뷰"),
-
-        ("INTERVIEW_KIMHYUNJUN_BASIC", "김현준 기본 인터뷰"),
-        ("INTERVIEW_KIMHYUNJUN_DEEP", "김현준 심층 인터뷰"),
-
-        ("INTERVIEW_KANGWONMO_BASIC", "강원모 기본 인터뷰"),
-        ("INTERVIEW_KANGWONMO_FOLLOWUP", "강원모 추가 인터뷰"),
-
-        ("INTERVIEW_PARKSOYOUNG", "박소영 인터뷰"),
-
-        ("WITNESS_KIMDONGYUL_CORRIDOR", "김동율 객실구역 목격 조사"),
-        ("WITNESS_KIMHYUNJUN_ARGUMENT", "김현준 언쟁 목격 조사"),
-        ("WITNESS_LAST_CONFIRMED_ALIVE", "피해자 마지막 생존 목격 조사"),
-        ("WITNESS_KIMHYUNJUN_MOVEMENT", "김현준 이동 동선 조사"),
-
-        ("ACCESS_KANGWONMO_RAW", "강원모 객실 출입기록 분석"),
-        ("ACCESS_CABIN_SYSTEM", "객실 출입 시스템 분석"),
-
-        ("ARCHIVE_HAESUNG_BASIC", "해성호 기본 사고기록"),
-        ("ARCHIVE_TECHNICAL_RISK", "해성호 기술적 위험 조사"),
-        ("ARCHIVE_INFORMATION_FLOW", "위험정보 전달과정 조사"),
-        ("ARCHIVE_RESPONSIBILITY", "사고 책임평가 조사"),
-        ("ARCHIVE_VICTIM_ANALYSIS", "최종인의 과거자료 재분석"),
-
-        ("TIMELINE_ALIBI_ANALYSIS", "시간대 및 알리바이 종합 분석")
-    ]
-
-    completed_count = sum(
-        1
-        for investigation_id, _ in investigation_items
-        if investigation_id in investigated
-    )
-
-    total_count = len(investigation_items)
-
-    status_lines = []
-
-    for investigation_id, label in investigation_items:
-
-        if investigation_id in investigated:
-            status_lines.append(f"- ✅ {label}")
-        else:
-            status_lines.append(f"- ⬜ {label}")
-
-    return f"""
-━━━━━━━━━━━━━━━━━━━━━━
-
-## 📋 조사 현황
-
-현재까지 **{completed_count} / {total_count}개**의 조사 항목을 완료했습니다.
-
-{chr(10).join(status_lines)}
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-새로운 조사를 진행하거나,
-확보한 기록에 관해 질문할 수 있습니다.
-"""
+    return show_investigation_status()
 def judge_accusation(accused):
     """
     Streamlit에서 범인 지목 결과를 반환하는 함수
@@ -1145,12 +1154,16 @@ def judge_accusation(accused):
 최종인을 살해했습니다.
 
 범행 후에는 사고 자료가 저장된 USB를 회수하고,
-예약 발송 메시지와 객실 출입기록의 허점을 이용해
-사망 시각과 자신의 동선을 숨기려 했습니다.
+자신의 객실로 돌아가 행적을 감추려 했습니다.
 
 그러나 디지털 기록과 목격자 진술,
 과거 사고자료를 하나씩 연결한 결과
 모든 증거는 강원모를 가리키고 있었습니다.
+
+21시 15분 메시지는 최종인이 생전에 설정한 예약 메시지였습니다.
+강원모가 만든 시간 트릭은 아니었지만,
+포렌식을 통해 생존증거가 아니라는 사실이 확인되면서
+실제 범행 가능시간이 드러났습니다.
 
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1162,6 +1175,11 @@ def judge_accusation(accused):
 
 강원모는 살인 및 증거인멸 혐의로
 수사기관에 인계되었습니다.
+
+정식 압수수색에서는 강원모의 개인 수하물 안에서
+최종인이 사용하던 USB가 확인되었습니다.
+저장장치의 식별정보와 복원된 파일구조도
+피해자의 기기 기록과 일치했습니다.
 
 해성호 사고 역시 재조사가 시작되었고,
 8년 동안 묻혀 있던 진실은
@@ -1410,7 +1428,9 @@ def process_user_input(user_input):
     search_query_response = llm.invoke(search_query_prompt)
     search_query = search_query_response.content.strip()
 
-    candidate_results = candidate_retriever.invoke(search_query)
+    candidate_results = retrieve_authorized_documents(
+        search_query
+    )
 
     candidate_text = ""
 
@@ -1799,7 +1819,9 @@ if __name__ == "__main__":
             search_query = search_query_response.content.strip()
 
 
-            candidate_results = candidate_retriever.invoke(search_query)
+            candidate_results = retrieve_authorized_documents(
+                search_query
+            )
 
             candidate_text = ""
 
@@ -1884,4 +1906,3 @@ if __name__ == "__main__":
                     print(chunk.content, end="", flush=True)
 
             print()
-

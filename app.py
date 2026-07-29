@@ -6,15 +6,20 @@ from game import (
     judge_accusation,
     get_investigation_status
 )
+from game_state import (
+    bind_session_state,
+    reset_game_state,
+    get_sidebar_summary,
+    use_hint,
+    get_story_chapter,
+    get_chapter_transition_message,
+    get_chapter_action_block
+)
 
 st.set_page_config(
     page_title="해성호의 마지막 기록",
     page_icon="🔎"
 )
-
-st.title("해성호의 마지막 기록")
-st.caption("기록관 에코와 함께 사건을 조사하십시오.")
-
 
 # 사용자 질문에 따라 답변 앞에 붙일 아이콘 결정
 def get_answer_icon(user_input):
@@ -51,6 +56,232 @@ def stream_text(text, animate=True, delay=0.02):
         time.sleep(delay)
 
     return displayed_text
+
+
+def render_investigation_sidebar():
+    """조사 화면에 스포일러 없는 진행 정보를 표시한다."""
+    summary = get_sidebar_summary()
+    status_icons = {
+        "completed": "●",
+        "in_progress": "◐",
+        "not_started": "○",
+    }
+
+    with st.sidebar:
+        st.markdown("## 🔎 수사 기록")
+        st.caption("현재 장")
+        st.markdown(
+            f"**{summary['current_stage']}**"
+        )
+        st.progress(summary["chapter_number"] / 6)
+        st.caption(f"전체 6장 중 {summary['chapter_number']}장")
+
+        st.metric(
+            "확보한 기록",
+            f"{summary['completed_count']}건"
+        )
+
+        st.markdown("### 조사 분야")
+
+        for category, status in summary["categories"].items():
+            icon = status_icons[status]
+            st.write(f"{icon} {category}")
+
+        st.caption("● 확인 완료 · ◐ 조사 중 · ○ 단서 부족")
+
+        if summary["recent_records"]:
+            st.markdown("### 최근 확보")
+
+            for record in reversed(
+                summary["recent_records"]
+            ):
+                st.write(f"- {record}")
+
+        with st.expander("사건 수첩"):
+            if summary["all_records"]:
+                for index, record in enumerate(
+                    summary["all_records"],
+                    start=1
+                ):
+                    st.write(f"{index}. {record}")
+            else:
+                st.write(
+                    "아직 확보한 조사 기록이 없습니다."
+                )
+
+        st.divider()
+        st.markdown(
+            "### 💡 남은 힌트: "
+            f"{summary['remaining_hints']} / "
+            f"{summary['max_hints']}"
+        )
+
+        if "confirm_hint" not in st.session_state:
+            st.session_state.confirm_hint = False
+
+        if (
+            summary["remaining_hints"] > 0
+            and not st.session_state.confirm_hint
+        ):
+            if st.button(
+                "힌트 요청",
+                use_container_width=True
+            ):
+                st.session_state.confirm_hint = True
+                st.rerun()
+
+        elif summary["remaining_hints"] > 0:
+            st.warning(
+                "힌트를 사용하면 남은 횟수가 "
+                "1회 차감됩니다."
+            )
+
+            use_column, cancel_column = st.columns(2)
+
+            with use_column:
+                if st.button(
+                    "힌트 사용",
+                    type="primary",
+                    use_container_width=True
+                ):
+                    use_hint()
+                    st.session_state.confirm_hint = False
+                    st.rerun()
+
+            with cancel_column:
+                if st.button(
+                    "취소",
+                    use_container_width=True
+                ):
+                    st.session_state.confirm_hint = False
+                    st.rerun()
+
+        else:
+            st.caption(
+                "이번 게임에서 사용할 수 있는 "
+                "힌트를 모두 사용했습니다."
+            )
+
+        if summary["last_hint"]:
+            st.info(summary["last_hint"])
+
+# 현재 화면을 기억하는 상태
+if "screen" not in st.session_state:
+    st.session_state.screen = "start"
+
+# 이 브라우저 세션의 조사 상태를 game_state와 연결
+bind_session_state(st.session_state)
+
+# 시작 화면
+if st.session_state.screen == "start":
+    st.markdown(
+        """
+        <style>
+        .start-title {
+            text-align: center;
+            font-size: 3rem;
+            font-weight: 700;
+            margin-top: 12vh;
+            margin-bottom: 0.5rem;
+        }
+        .start-subtitle {
+            text-align: center;
+            color: #9aa4b2;
+            line-height: 1.8;
+            margin-bottom: 2rem;
+        }
+        </style>
+
+        <div class="start-title">🔎 해성호의 마지막 기록</div>
+        <div class="start-subtitle">
+            폭풍 속 크루즈에서 발생한 의문의 살인사건.<br>
+            8년 전 해성호 사고의 기록이 다시 모습을 드러냅니다.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    left, center, right = st.columns([1, 1.4, 1])
+
+    with center:
+        if st.button(
+            "새 게임 시작",
+            type="primary",
+            use_container_width=True
+        ):
+            reset_game_state(st.session_state)
+            st.session_state.messages = []
+            st.session_state.intro_played = False
+            st.session_state.game_phase = "investigation"
+            st.session_state.selected_suspect = None
+            st.session_state.confirm_hint = False
+            st.session_state.screen = "prologue"
+            st.rerun()
+
+        with st.expander("게임 방법"):
+            st.markdown(
+                """
+                - 기록관 에코에게 사건에 관해 자유롭게 질문할 수 있습니다.
+                - 새로운 조사를 요청하면 관련 기록과 증거를 확보할 수 있습니다.
+                - **조사 현황**을 입력하면 현재까지의 진행 상황을 확인할 수 있습니다.
+                - 충분한 증거를 모은 뒤 **범인 지목**으로 최종 추리를 시작하세요.
+                """
+            )
+
+    st.stop()
+
+# 프롤로그 화면
+if st.session_state.screen == "prologue":
+    st.markdown("## 프롤로그")
+    st.caption("7월 20일 밤 · 현대 대형 크루즈선")
+
+    st.markdown(
+        """
+        창밖의 바다는 거칠게 흔들리고 있었습니다.
+
+        선상 산업행사가 끝나갈 무렵, 한 승객이 자신의 객실에서
+        숨진 채 발견됩니다. 피해자는 **최종인, 62세**.
+
+        처음에는 갑작스러운 죽음처럼 보였지만,
+        객실에 남은 기록들은 서로 다른 시간을 가리키고 있었습니다.
+
+        그리고 그의 이름 뒤에는 8년 동안 묻혀 있던
+        **해성호 사고**의 기록이 남아 있었습니다.
+
+        외부 수사기관이 도착하기 전까지,
+        선내 보안팀은 휴가 중이던 당신에게
+        현장 보존과 초기 조사를 요청합니다.
+        """
+    )
+
+    st.divider()
+
+    st.info(
+        "기록관 에코가 확보된 기록을 정리하고 "
+        "당신의 조사를 보조합니다."
+    )
+
+    back_column, start_column = st.columns(2)
+
+    with back_column:
+        if st.button("처음으로", use_container_width=True):
+            st.session_state.screen = "start"
+            st.rerun()
+
+    with start_column:
+        if st.button(
+            "조사 시작",
+            type="primary",
+            use_container_width=True
+        ):
+            st.session_state.screen = "game"
+            st.rerun()
+
+    st.stop()
+
+st.title("해성호의 마지막 기록")
+st.caption("기록관 에코와 함께 사건을 조사하십시오.")
+render_investigation_sidebar()
 
 # 최초 실행 시 시작 메시지 저장
 # 최초 실행 시 대화 기록 생성
@@ -100,6 +331,8 @@ if not st.session_state.intro_played:
 user_input = st.chat_input("조사 내용이나 질문을 입력하세요.")
 
 if user_input:
+    chapter_before = get_story_chapter()["number"]
+
     # 사용자 메시지 저장
     st.session_state.messages.append({
         "role": "user",
@@ -130,7 +363,14 @@ if user_input:
         ]
 
         if user_input.strip() in accusation_commands:
-            answer = """
+            accusation_block = get_chapter_action_block(
+                "accusation"
+            )
+
+            if accusation_block:
+                answer = accusation_block
+            else:
+                answer = """
 최종 추리를 시작합니다.
 
 범인으로 지목할 인물의 이름을 입력하십시오.
@@ -142,7 +382,7 @@ if user_input:
 
 지목을 중단하려면 **지목 취소**라고 입력하십시오.
 """
-            st.session_state.game_phase = "selecting_suspect"
+                st.session_state.game_phase = "selecting_suspect"
         elif user_input.strip() in status_commands:
             answer = get_investigation_status()
 
@@ -215,6 +455,10 @@ if user_input:
 
 새로운 게임을 시작하려면 앱을 다시 실행하십시오.
 """
+    chapter_after = get_story_chapter()["number"]
+    if chapter_after > chapter_before:
+        answer += get_chapter_transition_message(chapter_after)
+
     if st.session_state.game_phase == "finished":
         answer_icon = "🏁"
 
