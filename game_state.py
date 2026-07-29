@@ -1,4 +1,5 @@
 from contextvars import ContextVar
+from pathlib import Path
 
 from unlock_manager import unlock_document
 
@@ -16,6 +17,12 @@ _fallback_game_state = {
     "unlocked_documents": set(),
     "hint_count": 0,
     "hint_history": [],
+    "tutorial_events": set(),
+    "expected_tutorial_action": None,
+    "cabin_observations": set(),
+    "tutorial_reminders": set(),
+    "chapter_one_closed": False,
+    "chapter_one_reflection": None,
 }
 
 
@@ -27,6 +34,12 @@ def create_game_state():
         "unlocked_documents": set(),
         "hint_count": 0,
         "hint_history": [],
+        "tutorial_events": set(),
+        "expected_tutorial_action": None,
+        "cabin_observations": set(),
+        "tutorial_reminders": set(),
+        "chapter_one_closed": False,
+        "chapter_one_reflection": None,
     }
 
 
@@ -55,6 +68,30 @@ def bind_session_state(session_state):
     session_state.game_state_data.setdefault(
         "hint_history",
         []
+    )
+    session_state.game_state_data.setdefault(
+        "tutorial_events",
+        set()
+    )
+    session_state.game_state_data.setdefault(
+        "expected_tutorial_action",
+        None
+    )
+    session_state.game_state_data.setdefault(
+        "cabin_observations",
+        set()
+    )
+    session_state.game_state_data.setdefault(
+        "tutorial_reminders",
+        set()
+    )
+    session_state.game_state_data.setdefault(
+        "chapter_one_closed",
+        False
+    )
+    session_state.game_state_data.setdefault(
+        "chapter_one_reflection",
+        None
     )
 
     _current_game_state.set(
@@ -98,6 +135,10 @@ def _unlock_for_current_player(file_name):
     unlock_document(file_name)
     _get_unlocked_document_set().add(file_name)
 INVESTIGATION_TITLES = {
+    # 1장 현장 조사
+    "SCENE_CABIN_INSPECTION": "피해자 객실 현장 조사",
+    "SCENE_DISCOVERY_RECONSTRUCTION": "시신 발견 경위 재구성",
+
     # 인터뷰
     "INTERVIEW_KIMDONGYUL_BASIC": "김동율 기본 인터뷰",
     "INTERVIEW_KIMDONGYUL_DEEP": "김동율 심층 재인터뷰",
@@ -136,6 +177,7 @@ INVESTIGATION_TITLES = {
     "ARCHIVE_VICTIM_ANALYSIS": "최종인의 과거 사고 재분석 기록 조사",
 }
 
+
 def add_investigation_log(investigation_id):
     investigation_log = _get_investigation_log_list()
 
@@ -163,6 +205,13 @@ def add_investigation(investigation_id):
 
 # 조사 ID와 해금할 문서를 연결
 UNLOCK_RULES = {
+    # SCENE
+    "SCENE_CABIN_INSPECTION":
+        "SCENE_001_CABIN_INSPECTION.md",
+
+    "SCENE_DISCOVERY_RECONSTRUCTION":
+        "SCENE_002_DISCOVERY_RECONSTRUCTION.md",
+
     # INTERVIEW
     "INTERVIEW_KIMDONGYUL_BASIC":
         "INT_001_KIMDONGYUL_BASIC.md",
@@ -243,6 +292,60 @@ UNLOCK_RULES = {
 }
 
 
+def _read_notebook_document(investigation_id):
+    """해금된 RAG 원문을 사건 수첩 표시용으로 읽는다."""
+    file_name = UNLOCK_RULES.get(investigation_id)
+
+    if not file_name:
+        return None
+
+    file_path = (
+        Path(__file__).resolve().parent
+        / "data"
+        / "locked"
+        / file_name
+    )
+
+    if not file_path.exists():
+        return None
+
+    lines = file_path.read_text(
+        encoding="utf-8"
+    ).splitlines()
+
+    # 제목은 사건 수첩의 펼침 제목으로 이미 표시한다.
+    if lines and lines[0].startswith("# "):
+        lines = lines[1:]
+
+    return "\n".join(lines).strip()
+
+
+def read_investigation_section(investigation_id, section_title):
+    """조사 원문의 특정 Markdown H2 구역을 반환한다."""
+    document = _read_notebook_document(investigation_id)
+
+    if not document:
+        return None
+
+    target_heading = f"## {section_title}"
+    section_lines = []
+    collecting = False
+
+    for line in document.splitlines():
+        if line == target_heading:
+            collecting = True
+            continue
+
+        if collecting and line.startswith("## "):
+            break
+
+        if collecting:
+            section_lines.append(line)
+
+    content = "\n".join(section_lines).strip()
+    return content or None
+
+
 # 완료된 조사에 대응하는 문서 해금
 def check_unlocks(investigation_id):
     investigated = _get_investigated_set()
@@ -284,6 +387,302 @@ def get_unlocked_documents():
     return _get_unlocked_document_set().copy()
 
 
+def mark_tutorial_event(event_name):
+    """튜토리얼 안내가 같은 세션에서 한 번만 나오도록 기록한다."""
+    events = _get_game_state()["tutorial_events"]
+
+    if event_name in events:
+        return False
+
+    events.add(event_name)
+    return True
+
+
+def has_tutorial_event(event_name):
+    """현재 세션에서 특정 튜토리얼 행동을 완료했는지 반환한다."""
+    return event_name in _get_game_state()["tutorial_events"]
+
+
+def set_tutorial_expected_action(action_name):
+    """에코가 방금 제안한 1장 행동을 기억한다."""
+    _get_game_state()["expected_tutorial_action"] = action_name
+
+
+def get_tutorial_expected_action():
+    """현재 에코가 플레이어의 동의를 기다리는 행동을 반환한다."""
+    return _get_game_state()["expected_tutorial_action"]
+
+
+def clear_tutorial_expected_action():
+    """기대하던 행동이 실행됐거나 더 이상 유효하지 않을 때 지운다."""
+    _get_game_state()["expected_tutorial_action"] = None
+
+
+def get_cabin_observations():
+    """현재까지 확인한 객실 세부 구역을 반환한다."""
+    return _get_game_state()["cabin_observations"].copy()
+
+
+def add_cabin_observation(observation_name):
+    """객실 세부 관찰을 기록하고 모든 구역 확인 여부를 반환한다."""
+    observations = _get_game_state()["cabin_observations"]
+    observations.add(observation_name)
+
+    return {
+        "door",
+        "table",
+        "floor",
+    }.issubset(observations)
+
+
+def is_cabin_clue_followup(user_input):
+    """
+    사용자가 객실 기록의 실제 단서를 질문했는지 판정한다.
+
+    사건 수첩 열람법 같은 UI 질문은 제외하고, 표현이 달라도
+    같은 현장 개념을 가리키면 후속 질문으로 인정한다.
+    """
+    normalized = "".join(
+        character
+        for character in user_input.lower()
+        if not character.isspace()
+    )
+
+    ui_intents = [
+        "수첩",
+        "기록볼",
+        "기록보",
+        "기록열",
+        "열람",
+        "어디서봐",
+        "어떻게봐",
+    ]
+    if any(intent in normalized for intent in ui_intents):
+        return False
+
+    clue_concept_groups = [
+        [
+            "강제침입",
+            "강제침임",
+            "강제파손",
+            "침입흔적",
+            "침임흔적",
+            "파손흔적",
+            "문이안부서",
+        ],
+        [
+            "출입문",
+            "잠금장치",
+            "문을열",
+            "문열어",
+            "열쇠",
+            "카드키",
+            "정상출입",
+            "출입권한",
+            "들어왔",
+            "들여보",
+            "들였",
+            "아는사람",
+            "그냥들어",
+            "초대",
+        ],
+        [
+            "물잔",
+            "물컵",
+            "약보관함",
+            "약통",
+            "복용",
+            "테이블위",
+            "탁자위",
+        ],
+        [
+            "의자",
+            "바닥매트",
+            "매트주름",
+            "가구배치",
+            "어긋",
+            "난투",
+            "수색흔적",
+            "정돈",
+            "흐트러",
+        ],
+    ]
+
+    return any(
+        any(
+            concept in normalized
+            for concept in concept_group
+        )
+        for concept_group in clue_concept_groups
+    )
+
+
+def get_pending_tutorial_reminder():
+    """중간 질문 뒤 아직 남아 있는 1장 행동을 한 번 상기시킨다."""
+    if get_story_chapter()["number"] != 1:
+        return None
+
+    action_name = get_tutorial_expected_action()
+
+    if not action_name:
+        return None
+
+    reminders = _get_game_state()["tutorial_reminders"]
+    reminder_key = f"reminder:{action_name}"
+
+    if reminder_key in reminders:
+        return None
+
+    reminder_messages = {
+        "cabin": (
+            "질문에 대한 확인은 마쳤습니다. 준비되셨다면 아까 "
+            "말씀드린 **객실 출입문과 잠금장치 조사**를 이어가죠. "
+            "`계속하자`라고 답하셔도 됩니다."
+        ),
+        "cabin_table": (
+            "그럼 다시 객실 조사로 돌아가 볼까요? 다음은 "
+            "**테이블과 그 위 물건**을 확인할 차례입니다. "
+            "`계속 살펴보자`라고 말씀하셔도 됩니다."
+        ),
+        "cabin_floor": (
+            "확인이 끝났다면 남은 **바닥과 가구 주변** 조사를 "
+            "이어갈 수 있어요. `계속 조사하자`라고 말씀해 주세요."
+        ),
+        "cabin_followup": (
+            "사건 수첩을 확인한 뒤, 객실 기록에서 마음에 걸리는 "
+            "흔적 하나를 제게 질문해 주세요. 그 의미를 함께 "
+            "정리해 보겠습니다."
+        ),
+        "forensic": (
+            "준비되셨다면 다음으로 피해자의 **시신 상태와 사망 "
+            "원인**을 조사해 보겠습니다. `계속하자`라고 하셔도 "
+            "알아들을 수 있어요."
+        ),
+        "discovery": (
+            "이제 남은 것은 신고부터 객실 개방까지의 **시신 발견 "
+            "과정**입니다. 준비되셨다면 `계속하자`라고 말씀해 "
+            "주세요."
+        ),
+    }
+    message = reminder_messages.get(action_name)
+
+    if not message:
+        return None
+
+    reminders.add(reminder_key)
+    return message
+
+
+def get_chapter_one_coach_message():
+    """
+    1장에서 완료된 행동 다음에 에코가 먼저 제안할 안내를 반환한다.
+
+    같은 안내는 세션당 한 번만 반환하며, 플레이어가 조사 순서를
+    바꾸면 아직 확보하지 않은 핵심 기록을 기준으로 안내한다.
+    """
+    if get_story_chapter()["number"] != 1:
+        return None
+
+    investigated = _get_investigated_set()
+    events = _get_game_state()["tutorial_events"]
+    cabin_observations = get_cabin_observations()
+
+    if "SCENE_CABIN_INSPECTION" not in investigated:
+        if "door" not in cabin_observations:
+            set_tutorial_expected_action("cabin")
+
+            if "coach_cabin" not in events:
+                events.add("coach_cabin")
+                return (
+                    "객실의 **출입문과 잠금장치**부터 살펴보는 게 "
+                    "좋겠어요.\n\n"
+                    "저에게 **객실을 조사해 달라**고 말씀해 "
+                    "주시겠어요? `피해자가 발견된 객실을 살펴봐`처럼 "
+                    "편하게 말하셔도 됩니다."
+                )
+
+            return None
+
+        if "table" not in cabin_observations:
+            set_tutorial_expected_action("cabin_table")
+
+            if "coach_cabin_table" not in events:
+                events.add("coach_cabin_table")
+                return (
+                    "출입문 주변 확인을 마쳤어요. 이번에는 객실 "
+                    "안쪽의 **테이블과 그 위 물건**을 살펴볼까요?\n\n"
+                    "예를 들면 `테이블을 조사해 봐`처럼 말하거나, "
+                    "간단히 `계속 살펴보자`라고 해도 됩니다."
+                )
+
+            return None
+
+        if "floor" not in cabin_observations:
+            set_tutorial_expected_action("cabin_floor")
+
+            if "coach_cabin_floor" not in events:
+                events.add("coach_cabin_floor")
+                return (
+                    "테이블 확인도 끝났어요. 아직 객실의 배치 "
+                    "자체는 살펴보지 않았습니다.\n\n"
+                    "마지막으로 **바닥과 가구 주변**을 확인해 "
+                    "보시겠어요? 간단히 `계속 조사하자`라고 "
+                    "말씀하셔도 됩니다."
+                )
+
+            return None
+
+        return None
+
+    if (
+        "FORENSIC_POSTMORTEM" not in investigated
+        and "cabin_record_followup" not in events
+    ):
+        set_tutorial_expected_action("cabin_followup")
+
+        if "coach_cabin_followup" not in events:
+            events.add("coach_cabin_followup")
+            return (
+                "객실 조사 기록을 사건 수첩에 추가했어요.\n\n"
+                "원한다면 강제 침입 흔적이나 테이블 위 물건처럼 "
+                "마음에 걸리는 부분을 골라 질문해 보세요. 바로 "
+                "진행하려면 **피해자의 상태나 사망 원인을 확인해 "
+                "달라**고 말씀하셔도 됩니다."
+            )
+
+        return None
+
+    if "FORENSIC_POSTMORTEM" not in investigated:
+        if "coach_forensic" not in events:
+            events.add("coach_forensic")
+            set_tutorial_expected_action("forensic")
+            return (
+                "좋은 질문이에요. 이렇게 확보한 기록의 의미를 "
+                "다시 묻는 것이 이 조사의 핵심입니다.\n\n"
+                "하지만 객실 흔적만으로는 피해자가 어떻게 "
+                "사망했는지 알 수 없어요. 이번에는 저에게 "
+                "**피해자의 사망 원인을 조사해 달라**고 "
+                "말씀해 주시겠어요?"
+            )
+        return None
+
+    if "SCENE_DISCOVERY_RECONSTRUCTION" not in investigated:
+        if "coach_discovery" not in events:
+            events.add("coach_discovery")
+            set_tutorial_expected_action("discovery")
+            return (
+                "법의학 기록도 사건 수첩에 추가했어요. 여기서 "
+                "한 가지를 구분해야 합니다. **23시 20분은 사망 "
+                "시각이 아니라 발견 시각**이에요.\n\n"
+                "이제 누가 신고했고 어떤 절차로 객실이 열렸는지 "
+                "확인해 볼까요? 저에게 **시신 발견 과정을 조사해 "
+                "달라**고 말씀해 주세요."
+            )
+        return None
+
+    return None
+
+
 MAX_HINTS = 3
 
 
@@ -291,59 +690,69 @@ STORY_CHAPTERS = {
     1: {
         "title": "객실에 남은 흔적",
         "transition": (
-            "최종인의 죽음은 단순 사고가 아니었습니다.\n\n"
-            "이제 사건 당일 그와 접촉한 사람들의 말을 "
-            "확인해야 합니다."
+            "최종인의 죽음은 단순 사고가 아니었습니다. "
+            "사건 당일의 진술을 확인할 차례입니다."
         ),
     },
     2: {
         "title": "네 사람의 진술",
         "transition": (
-            "네 사람은 모두 사실의 일부만을 말하고 있습니다.\n\n"
-            "진술보다 객관적인 시간 기록을 다시 살펴볼 때입니다."
+            "문은 부서지지 않았고 객실 전체를 뒤엎은 싸움도 "
+            "없었습니다. 그러나 최종인은 누군가의 물리적 개입으로 "
+            "사망했습니다.\n\n"
+            "한 사람은 8년 전의 원한을 품고 있었고, 한 사람은 "
+            "그날 저녁 피해자와 충돌했습니다. 또 다른 사람은 "
+            "과거 사고의 관계자였으며, 마지막 한 사람은 그가 "
+            "나타나지 않자 객실 확인을 요청했습니다.\n\n"
+            "**최종인은 마지막으로 누구를 믿었고, 누구의 말이 "
+            "기록과 어긋나고 있을까요?**"
         ),
     },
     3: {
         "title": "존재하지 않는 21시 15분",
         "transition": (
             "메시지가 도착한 시간과 사람이 살아 있던 시간은 "
-            "같지 않았습니다.\n\n"
-            "무너진 시간축 안에서 실제 범행 가능시간을 "
-            "다시 구성해야 합니다."
+            "같지 않았습니다. 실제 범행 가능시간을 다시 구성해야 합니다."
         ),
     },
     4: {
         "title": "객실 밖의 76분",
         "transition": (
             "객실에 있었다는 진술은 출입기록으로 증명되지 "
-            "않았습니다.\n\n"
-            "이제 현재의 살인과 8년 전 사고가 어떻게 "
-            "연결되는지 확인해야 합니다."
+            "않았습니다. 이제 8년 전 기록과의 연결을 확인해야 합니다."
         ),
     },
     5: {
         "title": "8년 전의 침묵",
         "transition": (
-            "현재의 살인은 8년 전 진실을 다시 묻기 위한 "
-            "두 번째 은폐였습니다.\n\n"
-            "확보한 시간·동기·자료를 하나의 증거망으로 "
-            "연결할 차례입니다."
+            "과거의 책임과 현재의 사건이 연결되었습니다. "
+            "확보한 기록을 하나의 증거망으로 정리할 차례입니다."
         ),
     },
     6: {
         "title": "마지막 기록",
         "transition": (
-            "핵심 조사기록이 모두 연결되었습니다.\n\n"
-            "이제 범인, 범행 가능시간, 동기와 핵심 증거를 "
-            "바탕으로 마지막 추리를 준비할 수 있습니다."
+            "핵심 조사기록이 모두 연결되었습니다. "
+            "마지막 추리를 준비하십시오."
         ),
     },
+}
+
+CHAPTER_OBJECTIVES = {
+    1: "객실 현장, 피해자의 상태와 시신 발견 과정을 확인하십시오.",
+    2: "주요 관계자들의 기본 진술을 확보하고 서로 비교하십시오.",
+    3: "피해자의 마지막 생존시각과 21시 15분 메시지를 검증하십시오.",
+    4: "객실 출입기록과 알리바이를 대조해 범행 가능시간을 재구성하십시오.",
+    5: "해성호 기록, 피해자의 재조사와 사라진 자료의 의미를 연결하십시오.",
+    6: "확보한 기록을 바탕으로 범인·시간·동기·핵심 증거를 정리하십시오.",
 }
 
 
 CHAPTER_REQUIREMENTS = {
     2: {
+        "SCENE_CABIN_INSPECTION",
         "FORENSIC_POSTMORTEM",
+        "SCENE_DISCOVERY_RECONSTRUCTION",
     },
     3: {
         "INTERVIEW_KIMDONGYUL_BASIC",
@@ -370,6 +779,44 @@ CHAPTER_REQUIREMENTS = {
 }
 
 
+def is_chapter_one_ready():
+    """1장의 필수 기록이 모두 확보됐는지 반환한다."""
+    return CHAPTER_REQUIREMENTS[2].issubset(
+        _get_investigated_set()
+    )
+
+
+def get_chapter_one_reflection():
+    """플레이어가 1장 끝에 기록한 첫 판단을 반환한다."""
+    return _get_game_state()["chapter_one_reflection"]
+
+
+def set_chapter_one_reflection(reflection_key):
+    """1장의 첫 판단을 한 번 기록한다."""
+    state = _get_game_state()
+
+    if state["chapter_one_reflection"] is not None:
+        return False
+
+    state["chapter_one_reflection"] = reflection_key
+    return True
+
+
+def complete_chapter_one():
+    """필수 기록 확보 후 플레이어가 1장을 직접 정리해 종료한다."""
+    state = _get_game_state()
+
+    if (
+        not is_chapter_one_ready()
+        or state["chapter_one_reflection"] is None
+    ):
+        return False
+
+    state["chapter_one_closed"] = True
+    clear_tutorial_expected_action()
+    return True
+
+
 def get_story_chapter():
     """완료한 핵심 조사로 현재 스토리 장을 계산한다."""
     investigated = _get_investigated_set()
@@ -381,6 +828,13 @@ def get_story_chapter():
         ]
 
         if requirements.issubset(investigated):
+            if (
+                next_chapter == 2
+                and not _get_game_state()[
+                    "chapter_one_closed"
+                ]
+            ):
+                break
             chapter_number = next_chapter
         else:
             break
@@ -405,6 +859,8 @@ def get_chapter_transition_message(chapter_number):
         "\n\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"## 제{chapter_number}장 — {chapter['title']}\n\n"
         f"{chapter['transition']}\n\n"
+        "**현재 목표**\n\n"
+        f"{CHAPTER_OBJECTIVES[chapter_number]}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
 
@@ -413,13 +869,15 @@ CHAPTER_ACTION_RULES = {
     "interview": {
         "minimum_chapter": 2,
         "direction": (
-            "먼저 객실의 사망원인과 현장 흔적을 확인해야 합니다."
+            "먼저 객실 현장, 사망원인과 시신 발견 과정을 "
+            "확인해야 합니다."
         ),
     },
     "witness_general": {
         "minimum_chapter": 2,
         "direction": (
-            "먼저 객실의 사망원인과 현장 흔적을 확인해야 합니다."
+            "먼저 객실 현장, 사망원인과 시신 발견 과정을 "
+            "확인해야 합니다."
         ),
     },
     "witness_last_alive": {
@@ -489,7 +947,9 @@ def get_chapter_action_block(action_name):
 
 INVESTIGATION_CATEGORIES = {
     "현장과 피해자": {
+        "SCENE_CABIN_INSPECTION",
         "FORENSIC_POSTMORTEM",
+        "SCENE_DISCOVERY_RECONSTRUCTION",
     },
     "관계자 진술": {
         "INTERVIEW_KIMDONGYUL_BASIC",
@@ -529,6 +989,7 @@ def get_sidebar_summary():
     investigated = state["investigated"]
     investigation_log = state["investigation_log"]
     story_chapter = get_story_chapter()
+    cabin_observations = state["cabin_observations"]
 
     categories = {
         category: _category_status(
@@ -538,13 +999,33 @@ def get_sidebar_summary():
         for category, required_ids
         in INVESTIGATION_CATEGORIES.items()
     }
+    title_to_id = {
+        title: investigation_id
+        for investigation_id, title
+        in INVESTIGATION_TITLES.items()
+    }
+    notebook_entries = []
+
+    for title in investigation_log:
+        investigation_id = title_to_id.get(title)
+        notebook_entries.append({
+            "title": title,
+            "content": _read_notebook_document(
+                investigation_id
+            ),
+        })
 
     return {
         "current_stage": story_chapter["label"],
         "chapter_number": story_chapter["number"],
         "chapter_title": story_chapter["title"],
+        "cabin_observations": cabin_observations.copy(),
+        "cabin_observation_count": len(
+            cabin_observations
+        ),
         "completed_count": len(investigation_log),
         "all_records": investigation_log.copy(),
+        "notebook_entries": notebook_entries,
         "recent_records": investigation_log[-3:],
         "categories": categories,
         "remaining_hints": (
@@ -576,11 +1057,27 @@ def use_hint():
     chapter_hint_candidates = {
         1: [
             (
+                "SCENE_CABIN_INSPECTION",
+                (
+                    "사건이 시작된 장소에는 말보다 먼저 남은 흔적이 있습니다.",
+                    "피해자가 발견된 객실의 출입문과 실내 상태를 살펴보십시오.",
+                    "피해자 객실 현장을 조사해 강제 침입과 실내 흔적을 확인해 보십시오.",
+                ),
+            ),
+            (
                 "FORENSIC_POSTMORTEM",
                 (
                     "사건의 출발점은 피해자의 상태와 현장입니다.",
                     "정확한 사망 시각을 판단하려면 먼저 사망 원인과 현장 상태를 확인해 보십시오.",
                     "피해자의 사망 원인과 현장 감식을 새롭게 조사해 보십시오.",
+                ),
+            ),
+            (
+                "SCENE_DISCOVERY_RECONSTRUCTION",
+                (
+                    "발견된 시간과 실제 사망한 시간은 같지 않을 수 있습니다.",
+                    "누가 신고했고 어떤 절차로 객실을 열었는지 확인해 보십시오.",
+                    "신고부터 시신 확인까지의 발견 경위를 재구성해 보십시오.",
                 ),
             ),
         ],
