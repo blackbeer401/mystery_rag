@@ -6,13 +6,25 @@ import json
 import time
 from pathlib import Path
 
+from game_director import decide_game_action
 from game_state import (
+    CHAPTER_OBJECTIVES,
     add_investigation,
     get_investigated,
     get_unlocked_documents,
     show_investigation_log,
     show_investigation_status,
-    get_chapter_action_block
+    get_chapter_action_block,
+    get_story_chapter,
+    mark_tutorial_event,
+    has_tutorial_event,
+    get_tutorial_expected_action,
+    clear_tutorial_expected_action,
+    get_cabin_observations,
+    add_cabin_observation,
+    read_investigation_section,
+    is_cabin_clue_followup,
+    is_chapter_one_ready,
 )
 
 load_dotenv()
@@ -29,38 +41,18 @@ def get_start_message():
     """
 
     return """
-## 📋 사건 브리핑
+## 제1장 — 객실에 남은 흔적
 
-| 구분 | 현재 확인된 내용 |
-|---|---|
-| 피해자 | **최종인, 62세** |
-| 발견 장소 | 최종인의 객실 |
-| 발견 시각 | 약 **23시 20분** |
-| 발견 계기 | 22시 30분 업무 일정 불참 후 연락 두절 |
-| 현재 미확인 | 정확한 사망 시각, 사망 원인, 사건 경위 |
+**23시 20분. 비상 개방된 객실 안에서 최종인이 발견됐습니다.**
 
-### 주요 관계자
+문은 부서지지 않았고 객실 전체가 크게 흐트러지지도 않았습니다.
+그러나 그가 언제, 왜 죽었는지는 아직 설명되지 않습니다.
 
-- **김동율** — 8년 전 해성호 사고 당시 현장 책임자
-- **김현준** — 최근 최종인과 업무상 갈등이 있었던 인물
-- **강원모** — 해성호 사고 관련 업무에 관여한 인물
-- **박소영** — 선상 산업행사 운영 담당자이자 신고 관계자
+**현재 목표**
 
-### 조사 방법
+객실이 열리기 전까지 그 안에서 무슨 일이 있었는지 확인하십시오.
 
-기록관 에코에게 자연어로 질문하거나 새로운 조사를 요청할 수 있습니다.
-조사를 완료하면 관련 기록이 해금되고, 이후 질문에서 새 정보가 검색됩니다.
-
-- `피해자의 사망 원인을 조사해봐`
-- `김동율을 인터뷰해봐`
-- `21시 15분 메시지를 포렌식해봐`
-- `조사 현황`
-
-> 현재 정보만으로는 특정 인물을 범인으로 판단할 수 없습니다.
-
-### 추천 첫 조사
-
-**피해자의 사망 원인을 조사해봐**
+기록관 에코가 현장 기록을 동기화했습니다.
 """
 
 # -------------------------
@@ -622,12 +614,126 @@ def forensic_investigation():
             "FORENSIC_POSTMORTEM"
         )
 
-        return (
-            "피해자의 사망원인과 현장 감식 결과를 "
-            "법의학적으로 분석했습니다."
+        result = (
+            "피해자의 시신과 현장 감식 결과를 법의학적으로 "
+            "분석했습니다.\n\n"
+            "목 부위에 외력이 가해진 흔적이 확인됐으며, "
+            "검시 소견은 **경부 압박에 의한 질식성 사망**과 "
+            "부합합니다. 타인의 물리적 개입 가능성을 강하게 "
+            "검토해야 합니다.\n\n"
+            "다만 법의학적 소견만으로 정확한 사망 시각을 "
+            "분 단위로 확정할 수는 없습니다. 검시 기록을 "
+            "사건 수첩에 보관했습니다."
         )
+        return result
 
     return "법의학 및 현장 감식 조사는 이미 완료했습니다."
+
+
+def scene_investigation(target: str):
+    """
+    1장에서 피해자 객실 또는 시신 발견 과정을 새롭게 조사한다.
+
+    이미 확보한 현장 기록의 내용을 묻는 질문에는 사용하지 않는다.
+    """
+    current_state = get_investigated()
+
+    cabin_targets = {
+        "피해자 객실 현장": (
+            "door",
+            "출입문과 잠금장치",
+        ),
+        "객실 출입문": (
+            "door",
+            "출입문과 잠금장치",
+        ),
+        "객실 테이블": (
+            "table",
+            "테이블과 물품",
+        ),
+        "객실 바닥과 가구": (
+            "floor",
+            "바닥과 가구",
+        ),
+    }
+
+    if target in cabin_targets:
+        investigation_id = "SCENE_CABIN_INSPECTION"
+        observations = get_cabin_observations()
+
+        # 포괄적인 객실 조사 요청은 아직 보지 않은 구역부터 진행한다.
+        if target == "피해자 객실 현장":
+            for next_target in (
+                "객실 출입문",
+                "객실 테이블",
+                "객실 바닥과 가구",
+            ):
+                observation_name = cabin_targets[
+                    next_target
+                ][0]
+                if observation_name not in observations:
+                    target = next_target
+                    break
+
+        observation_name, section_title = cabin_targets[
+            target
+        ]
+
+        if investigation_id in current_state:
+            return "피해자 객실 현장 조사는 이미 완료했습니다."
+
+        if observation_name in observations:
+            return (
+                f"{section_title} 구역은 이미 확인했습니다. "
+                "아직 살펴보지 않은 객실 구역을 확인해 보십시오."
+            )
+
+        completed = add_cabin_observation(
+            observation_name
+        )
+        section_content = read_investigation_section(
+            investigation_id,
+            section_title,
+        )
+
+        result = (
+            f"객실의 **{section_title}** 구역을 확인했습니다.\n\n"
+            f"{section_content}"
+        )
+
+        if completed:
+            add_investigation(investigation_id)
+            result += (
+                "\n\n객실의 세 구역을 모두 확인했습니다. "
+                "전체 객실 현장 기록을 사건 수첩에 보관했습니다."
+            )
+        else:
+            result += (
+                "\n\n아직 확인하지 않은 객실 구역이 남아 있습니다."
+            )
+
+        return result
+
+    if target == "시신 발견 경위":
+        investigation_id = "SCENE_DISCOVERY_RECONSTRUCTION"
+
+        if investigation_id in current_state:
+            return "시신 발견 경위는 이미 재구성했습니다."
+
+        add_investigation(investigation_id)
+        result = (
+            "신고 접수부터 객실 개방, 사망 확인까지의 과정을 "
+            "관계자 기록으로 재구성했습니다.\n\n"
+            "박소영은 22시 30분 업무 일정에 최종인이 나타나지 "
+            "않자 연락을 시도했고, 선내 직원과 보안 담당자에게 "
+            "객실 확인을 요청했습니다. 비상 개방 절차 후 "
+            "약 23시 20분 최종인의 사망이 확인됐습니다.\n\n"
+            "따라서 박소영은 시신을 혼자 먼저 발견한 사람이 "
+            "아니라 객실 확인을 요청한 신고 관계자입니다."
+        )
+        return result
+
+    return f"'{target}'에 해당하는 현장 조사는 준비되어 있지 않습니다."
 
 def witness_investigation(target: str):
     """
@@ -744,6 +850,31 @@ def witness_investigation(target: str):
     )
 
 tools = [
+    {
+        "type": "function",
+        "name": "scene_investigation",
+        "description": (
+            "피해자가 발견된 객실 자체를 살펴보거나, 신고부터 "
+            "시신 확인까지의 발견 경위를 새롭게 조사할 때 사용한다."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": [
+                        "피해자 객실 현장",
+                        "객실 출입문",
+                        "객실 테이블",
+                        "객실 바닥과 가구",
+                        "시신 발견 경위",
+                    ],
+                },
+            },
+            "required": ["target"],
+            "additionalProperties": False,
+        },
+    },
     {
         "type": "function",
         "name": "interview",
@@ -1034,10 +1165,10 @@ def show_ending(accused):
 [사건 개요]
 
 피해자 최종인은
-8년 전 해성호 사고의 원본 기록을 확보한 뒤,
-당시 사고가 단순한 해상 사고가 아니라
-위험 정보가 축소되고 책임이 은폐된 사건이라는
-사실을 밝혀내려 했습니다.
+8년 전 해성호 사고의 초기자료와
+사고 후 책임평가 자료를 다시 비교하며,
+위험 정보가 축소되고 책임이 왜곡된 과정을
+밝혀내려 했습니다.
 
 강원모는 과거 사고와 관련된 핵심 인물로,
 진실이 세상에 공개되는 것을 막기 위해
@@ -1120,12 +1251,149 @@ def get_investigation_status():
     아직 발견하지 않은 구체적인 조사 항목은 노출하지 않는다.
     """
     return show_investigation_status()
-def judge_accusation(accused):
-    """
-    Streamlit에서 범인 지목 결과를 반환하는 함수
-    """
 
-    if accused == "강원모":
+
+FINAL_EVIDENCE_GROUPS = {
+    "21시 15분 예약 메시지": (
+        "예약 메시지",
+        "예약메시지",
+        "예약 발송",
+        "예약발송",
+        "21:15",
+        "21시 15분",
+    ),
+    "19시 55분 마지막 생존 목격": (
+        "19:55",
+        "19시 55분",
+        "마지막 생존",
+        "생존 목격",
+        "서민재",
+    ),
+    "강원모 객실 출입기록의 공백": (
+        "19:20",
+        "19시 20분",
+        "20:36",
+        "20시 36분",
+        "출입 기록",
+        "출입기록",
+        "퇴실 기록",
+        "퇴실기록",
+        "entry",
+    ),
+    "사라진 USB와 디지털 흔적": (
+        "usb",
+        "저장장치",
+        "외부 저장장치",
+    ),
+    "해성호 위험정보와 책임 왜곡": (
+        "해성호",
+        "위험정보",
+        "위험 정보",
+        "책임평가",
+        "책임 평가",
+        "김동율",
+    ),
+    "최종인의 재조사와 공개 계획": (
+        "재조사",
+        "다시 조사",
+        "외부 공개",
+        "공개 계획",
+        "폭로",
+        "자료 불일치",
+    ),
+}
+
+
+def evaluate_final_theory(
+    accused,
+    crime_time,
+    motive,
+    evidence_text,
+):
+    """최종 추리의 범인·시간·동기·증거 연결을 규칙 기반으로 판정한다."""
+    normalized_time = crime_time.lower().replace(" ", "")
+    normalized_motive = motive.lower()
+    normalized_evidence = evidence_text.lower()
+
+    has_full_window = (
+        (
+            "19:55" in normalized_time
+            or "19시55분" in normalized_time
+        )
+        and (
+            "20:36" in normalized_time
+            or "20시36분" in normalized_time
+        )
+    )
+    has_center_time = any(
+        expression in normalized_time
+        for expression in (
+            "20:15",
+            "20시15분",
+            "20시대초중반",
+            "20시초중반",
+            "20시경",
+        )
+    )
+    time_correct = has_full_window or has_center_time
+
+    motive_correct = (
+        "해성호" in normalized_motive
+        and any(
+            keyword in normalized_motive
+            for keyword in (
+                "은폐",
+                "공개",
+                "폭로",
+                "책임",
+                "지위",
+                "보호",
+                "막",
+            )
+        )
+    )
+
+    matched_evidence = [
+        label
+        for label, keywords in FINAL_EVIDENCE_GROUPS.items()
+        if any(
+            keyword in normalized_evidence
+            for keyword in keywords
+        )
+    ]
+
+    return {
+        "culprit_correct": accused == "강원모",
+        "time_correct": time_correct,
+        "motive_correct": motive_correct,
+        "matched_evidence": matched_evidence,
+        "evidence_correct": len(matched_evidence) >= 3,
+        "is_solved": (
+            accused == "강원모"
+            and time_correct
+            and motive_correct
+            and len(matched_evidence) >= 3
+        ),
+    }
+
+
+def judge_accusation(
+    accused,
+    crime_time="",
+    motive="",
+    evidence_text="",
+):
+    """
+    Streamlit에서 최종 추리 결과를 반환하는 함수.
+    """
+    evaluation = evaluate_final_theory(
+        accused,
+        crime_time,
+        motive,
+        evidence_text,
+    )
+
+    if evaluation["is_solved"]:
         return """
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1147,8 +1415,9 @@ def judge_accusation(accused):
 
 ### 사건의 진실
 
-피해자 최종인은 8년 전 해성호 사고의 원본 기록을 확보한 뒤,
-당시 사고가 단순한 해상 사고가 아니라는 사실을 밝혀내려 했습니다.
+피해자 최종인은 8년 전 해성호 사고의 초기자료와
+사고 후 책임평가 자료를 다시 비교하며,
+당시 사고의 책임이 왜곡된 과정을 밝혀내려 했습니다.
 
 강원모는 과거 사고의 진실이 공개되는 것을 막기 위해
 최종인을 살해했습니다.
@@ -1194,20 +1463,45 @@ def judge_accusation(accused):
 ━━━━━━━━━━━━━━━━━━━━━━
 """
 
+    review_lines = [
+        (
+            "- 범인 지목: 일치"
+            if evaluation["culprit_correct"]
+            else "- 범인 지목: 증거와 불일치"
+        ),
+        (
+            "- 범행 가능시간: 타임라인과 일치"
+            if evaluation["time_correct"]
+            else "- 범행 가능시간: 근거 부족"
+        ),
+        (
+            "- 동기: 과거 사건과 연결됨"
+            if evaluation["motive_correct"]
+            else "- 동기: 과거 사건과의 연결 부족"
+        ),
+        (
+            "- 핵심 증거: 충분히 연결됨"
+            if evaluation["evidence_correct"]
+            else "- 핵심 증거: 서로 다른 증거의 연결 부족"
+        ),
+    ]
+    review_text = "\n".join(review_lines)
+
     return f"""
 ━━━━━━━━━━━━━━━━━━━━━━
 
-## ❌ BAD END — 잘못된 지목
+## ❌ BAD END — 완성되지 않은 추리
 
 기록관 에코의 최종 분석이 완료되었습니다.
 
 탐정이 지목한 인물은 **{accused}**입니다.
 
-그러나 현재까지 확보된 증거를 종합한 결과,
-**{accused}을 이번 사건의 범인으로 판단할 수 없습니다.**
+### 최종 추리 검토
 
-사건의 핵심 증거와 시간대 분석에는
-설명되지 않는 모순이 남아 있습니다.
+{review_text}
+
+범인, 범행 가능시간, 동기와 핵심 증거가
+하나의 설명으로 충분히 연결되지 않았습니다.
 
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1226,101 +1520,472 @@ def judge_accusation(accused):
 
 ━━━━━━━━━━━━━━━━━━━━━━
 """
-def process_user_input(user_input):
+def get_game_progress_guidance():
+    """현재 상태만 사용해 스포일러 없는 다음 행동을 안내한다."""
+    chapter = get_story_chapter()
+    investigated = get_investigated()
+    observations = get_cabin_observations()
 
-    general_chat_keywords = [
-        "안녕",
-        "반가워",
-        "고마워",
-        "감사",
-        "잘 부탁",
-        "뭐해",
-        "누구야",
-        "넌 누구",
-        "에코야",
-        "사용법",
-        "도움말",
-        "게임 방법"
-    ]
+    if chapter["number"] == 1:
+        if "SCENE_CABIN_INSPECTION" not in investigated:
+            if "door" not in observations:
+                next_step = "객실의 출입문과 잠금장치 조사"
+            elif "table" not in observations:
+                next_step = "객실의 테이블과 물품 조사"
+            else:
+                next_step = "객실의 바닥과 가구 주변 조사"
 
-    case_keywords = [
-        "피해자",
-        "최종인",
-        "김동율",
-        "김현준",
-        "강원모",
-        "박소영",
-        "사망",
-        "검시",
-        "목격",
-        "진술",
-        "메시지",
-        "포렌식",
-        "출입기록",
-        "출입 기록",
-        "알리바이",
-        "해성호",
-        "사고",
-        "범인",
-        "증거",
-        "객실",
-        "조사",
-        "인터뷰",
-        "분석"
-    ]
+            return (
+                f"현재 1장에서 남은 다음 행동은 **{next_step}**입니다.\n\n"
+                "`계속 조사해보자`처럼 말씀하시면 현재 조사를 "
+                "이어가겠습니다."
+            )
 
-    is_general_chat = (
-        any(
-            keyword in user_input.lower()
-            for keyword in general_chat_keywords
-        )
-        and
-        not any(
-            keyword in user_input
-            for keyword in case_keywords
-        )
+        if "FORENSIC_POSTMORTEM" not in investigated:
+            return (
+                "객실 현장 기록은 확보했습니다. 다음으로 피해자의 "
+                "**시신 상태와 사망 원인**을 조사해야 합니다."
+            )
+
+        if (
+            "SCENE_DISCOVERY_RECONSTRUCTION"
+            not in investigated
+        ):
+            return (
+                "객실과 법의학 기록을 확보했습니다. 이제 신고부터 "
+                "객실 개방까지의 **시신 발견 과정**을 확인해야 합니다."
+            )
+
+        if is_chapter_one_ready():
+            return (
+                "1장의 핵심 기록은 모두 확보했습니다. 사이드바의 "
+                "**📓 사건 수첩 보기**에서 새 기록을 확인한 뒤 "
+                "**1장 정리하기**를 누르면 2장으로 넘어갈 수 있습니다."
+            )
+
+    return (
+        f"현재 **{chapter['label']}**을 진행 중입니다. "
+        "사이드바의 조사 분야와 사건 수첩에서 확보한 기록을 "
+        "확인하고, 현재 장의 조사 대상을 구체적으로 말씀해 주세요."
     )
 
-    if is_general_chat:
 
-        general_prompt = f"""
-너는 추리게임의 기록관 에코다.
+def get_required_next_action():
+    """현재 장에서 '계속'이라고 했을 때 실행할 필수 행동을 반환한다."""
+    chapter = get_story_chapter()
 
-사용자의 일반적인 인사, 감사 표현, 게임 사용 질문에
-자연스럽고 짧게 대답한다.
+    if chapter["number"] != 1:
+        return None
 
-규칙:
-1. 기록관 에코의 차분한 말투를 유지한다.
-2. 사건의 범인이나 숨겨진 정보를 공개하지 않는다.
-3. 확보되지 않은 사건 정보를 추측하지 않는다.
-4. 사건 관련 질문에는 임의로 답하지 말고 사건 질문을 입력하도록 안내한다.
-5. 답변은 두세 문장 이내로 작성한다.
+    investigated = get_investigated()
+    observations = get_cabin_observations()
 
-사용자 입력:
-{user_input}
-"""
+    if "SCENE_CABIN_INSPECTION" not in investigated:
+        if "door" not in observations:
+            return "cabin"
+        if "table" not in observations:
+            return "cabin_table"
+        return "cabin_floor"
 
-        response = llm.invoke(general_prompt)
-        return response.content
+    if "FORENSIC_POSTMORTEM" not in investigated:
+        return "forensic"
+
+    if "SCENE_DISCOVERY_RECONSTRUCTION" not in investigated:
+        return "discovery"
+
+    return None
+
+
+def get_optional_suggestion():
+    """필수 진행과 구분된 현재의 선택적 권장 행동을 반환한다."""
+    if (
+        get_story_chapter()["number"] == 1
+        and "SCENE_CABIN_INSPECTION" in get_investigated()
+        and "FORENSIC_POSTMORTEM" not in get_investigated()
+        and not has_tutorial_event("cabin_record_followup")
+    ):
+        return "cabin_clue_followup"
+
+    return None
+
+
+def build_director_context():
+    """사건 문서 없이도 입력을 분류할 수 있는 작은 상태를 만든다."""
+    chapter = get_story_chapter()
+
+    return {
+        "chapter_number": chapter["number"],
+        "chapter_goal": CHAPTER_OBJECTIVES[chapter["number"]],
+        "required_next_action": (
+            get_required_next_action() or "없음"
+        ),
+        "optional_suggestion": (
+            get_optional_suggestion() or "없음"
+        ),
+        "completed_actions": sorted(get_investigated()),
+        "cabin_observations": sorted(
+            get_cabin_observations()
+        ),
+    }
+
+
+def execute_director_decision(decision):
+    """Game Director가 결정한 현재 행동을 실제 게임 기능에 연결한다."""
+    intent = decision["intent"]
+    target = decision.get("target")
+
+    if intent == "progress_help":
+        return get_game_progress_guidance()
+
+    if intent == "continue_investigation":
+        action_name = get_required_next_action()
+        if not action_name:
+            return get_game_progress_guidance()
+    else:
+        action_name = target
+
+    if action_name == "cabin":
+        clear_tutorial_expected_action()
+        return scene_investigation("피해자 객실 현장")
+
+    if action_name == "cabin_door":
+        clear_tutorial_expected_action()
+        return scene_investigation("객실 출입문")
+
+    if action_name == "cabin_table":
+        clear_tutorial_expected_action()
+        return scene_investigation("객실 테이블")
+
+    if action_name == "cabin_floor":
+        clear_tutorial_expected_action()
+        return scene_investigation("객실 바닥과 가구")
+
+    if action_name == "cabin_followup":
+        return (
+            "사건 수첩의 객실 기록에서 마음에 걸리는 흔적을 "
+            "하나 골라 질문해 주세요. 예를 들면 강제 침입 흔적, "
+            "물잔과 약 보관함, 어긋난 의자와 매트가 있습니다."
+        )
+
+    if action_name == "forensic":
+        clear_tutorial_expected_action()
+        return forensic_investigation()
+
+    if action_name == "discovery":
+        clear_tutorial_expected_action()
+        return scene_investigation("시신 발견 경위")
+
+    if action_name == "kim_dongyul":
+        return interview("김동율")
+
+    if action_name == "kim_hyunjun":
+        return interview("김현준")
+
+    if action_name == "kang_wonmo":
+        return interview("강원모")
+
+    if action_name == "park_soyoung":
+        return interview("박소영")
+
+    witness_targets = {
+        "witness_dongyul_corridor": "김동율 객실구역 접근",
+        "witness_hyunjun_argument": "김현준 언쟁",
+        "witness_last_alive": "최종인 마지막 생존",
+        "witness_hyunjun_movement": "김현준 이동동선",
+    }
+    if action_name in witness_targets:
+        return witness_investigation(
+            witness_targets[action_name]
+        )
+
+    if action_name == "digital":
+        return digital_forensics()
+
+    if action_name == "access":
+        return access_log_analysis()
+
+    if action_name == "timeline":
+        return timeline_alibi_check()
+
+    if action_name == "archive":
+        return archive_investigation()
+
+    return get_game_progress_guidance()
+
+
+def _process_evidence_question(user_input):
+
+    # 1장은 게임의 문법을 익히는 튜토리얼이다.
+    # 에코가 다음 조사를 권한 상황에서는 사용자가 "조사해 줘"라는
+    # 동사를 붙이지 않아도 자연스러운 질문을 조사 행동으로 받아들인다.
+    if False and get_story_chapter()["number"] == 1:
+        current_state = get_investigated()
+        current_cabin_observations = (
+            get_cabin_observations()
+        )
+        normalized_input = user_input.replace(" ", "")
+        expected_action = get_tutorial_expected_action()
+        affirmative_inputs = {
+            "응",
+            "네",
+            "그래",
+            "좋아",
+            "해줘",
+            "해보자",
+            "진행해",
+            "그렇게해",
+            "그렇게해줘",
+            "계속살펴보자",
+            "계속조사하자",
+            "계속해",
+            "계속하자",
+            "진행하자",
+            "다음단계",
+            "다음단계조사",
+            "다음조사",
+            "계속진행",
+        }
+        is_affirmative = (
+            normalized_input.rstrip("?!.,")
+            in affirmative_inputs
+        )
+
+        cabin_intents = [
+            "객실조사",
+            "객실흔적",
+            "방안",
+            "현장",
+            "객실상태",
+            "방부터",
+        ]
+        door_detail_intents = [
+            "출입문",
+            "잠금",
+            "강제침입",
+            "강제침임",
+            "문상태",
+        ]
+        table_intents = [
+            "테이블",
+            "물잔",
+            "약보관함",
+            "탁자",
+        ]
+        floor_intents = [
+            "바닥",
+            "가구",
+            "의자",
+            "매트",
+        ]
+        forensic_intents = [
+            "사망원인",
+            "시신상태",
+            "시신의상태",
+            "검시",
+            "부검",
+            "어떻게죽",
+            "왜죽",
+        ]
+        discovery_intents = [
+            "누가발견",
+            "발견과정",
+            "발견경위",
+            "어떻게발견",
+            "신고과정",
+            "누가신고",
+        ]
+
+        if (
+            "SCENE_CABIN_INSPECTION" not in current_state
+            and
+            "table" in current_cabin_observations
+            and any(
+                intent in normalized_input
+                for intent in table_intents
+            )
+        ):
+            return (
+                "네, 테이블과 물품은 이미 확인했습니다.\n\n"
+                + read_investigation_section(
+                    "SCENE_CABIN_INSPECTION",
+                    "테이블과 물품",
+                )
+            )
+
+        if (
+            "SCENE_CABIN_INSPECTION" not in current_state
+            and
+            "floor" in current_cabin_observations
+            and any(
+                intent in normalized_input
+                for intent in floor_intents
+            )
+        ):
+            return (
+                "네, 바닥과 가구 주변은 이미 확인했습니다.\n\n"
+                + read_investigation_section(
+                    "SCENE_CABIN_INSPECTION",
+                    "바닥과 가구",
+                )
+            )
+
+        if (
+            "SCENE_CABIN_INSPECTION" not in current_state
+            and
+            "door" in current_cabin_observations
+            and any(
+                intent in normalized_input
+                for intent in door_detail_intents
+            )
+        ):
+            return (
+                "네, 출입문과 잠금장치는 이미 확인했습니다.\n\n"
+                + read_investigation_section(
+                    "SCENE_CABIN_INSPECTION",
+                    "출입문과 잠금장치",
+                )
+            )
+
+        if (
+            expected_action == "cabin_followup"
+            and is_affirmative
+        ):
+            return (
+                "좋아요. 객실 기록에서 가장 마음에 걸리는 부분을 "
+                "하나 골라 질문해 주세요.\n\n"
+                "예를 들면 **강제 침입 흔적이 없다는 건 무슨 "
+                "의미야?**처럼 물어보실 수 있어요."
+            )
+
+        if (
+            "SCENE_CABIN_INSPECTION" not in current_state
+            and "table" not in current_cabin_observations
+            and (
+                (
+                    expected_action == "cabin_table"
+                    and is_affirmative
+                )
+                or any(
+                    intent in normalized_input
+                    for intent in table_intents
+                )
+            )
+        ):
+            clear_tutorial_expected_action()
+            return scene_investigation("객실 테이블")
+
+        if (
+            "SCENE_CABIN_INSPECTION" not in current_state
+            and "floor" not in current_cabin_observations
+            and (
+                (
+                    expected_action == "cabin_floor"
+                    and is_affirmative
+                )
+                or any(
+                    intent in normalized_input
+                    for intent in floor_intents
+                )
+            )
+        ):
+            clear_tutorial_expected_action()
+            return scene_investigation("객실 바닥과 가구")
+
+        if (
+            "SCENE_CABIN_INSPECTION" not in current_state
+            and (
+                (
+                    expected_action == "cabin"
+                    and is_affirmative
+                )
+                or any(
+                    intent in normalized_input
+                    for intent in cabin_intents
+                )
+            )
+        ):
+            clear_tutorial_expected_action()
+            return scene_investigation("피해자 객실 현장")
+
+        if (
+            "FORENSIC_POSTMORTEM" not in current_state
+            and (
+                (
+                    expected_action == "forensic"
+                    and is_affirmative
+                )
+                or any(
+                    intent in normalized_input
+                    for intent in forensic_intents
+                )
+            )
+        ):
+            clear_tutorial_expected_action()
+            return forensic_investigation()
+
+        if (
+            "SCENE_DISCOVERY_RECONSTRUCTION" not in current_state
+            and (
+                (
+                    expected_action == "discovery"
+                    and is_affirmative
+                )
+                or any(
+                    intent in normalized_input
+                    for intent in discovery_intents
+                )
+            )
+        ):
+            clear_tutorial_expected_action()
+            return scene_investigation("시신 발견 경위")
 
     investigation_action_keywords = [
     "조사해봐",
     "조사해줘",
+    "조사해",
+    "조사하자",
+    "조사해보자",
     "인터뷰해봐",
     "인터뷰해줘",
+    "인터뷰해",
+    "인터뷰하자",
     "포렌식해봐",
     "포렌식해줘",
     "분석해봐",
     "분석해줘",
+    "분석해",
+    "분석하자",
     "감식해봐",
     "감식해줘",
     "확인해봐",
     "확인해줘",
+    "확인하자",
+    "살펴봐",
+    "살펴보자",
+    "둘러봐",
+    "찾아봐",
+    "재구성해봐",
+    "재구성해줘",
+    "보자",
 ]
-    is_investigation_request = any(
-        keyword in user_input
-        for keyword in investigation_action_keywords
-    )
+    is_investigation_request = False
+    chapter_one_scene_phrases = [
+        "방 안에 이상한",
+        "객실에 이상한",
+        "현장부터",
+        "발견된 장소",
+        "누가 발견",
+        "발견 경위",
+        "발견 과정",
+    ]
+    if (
+        get_story_chapter()["number"] == 1
+        and any(
+            phrase in user_input
+            for phrase in chapter_one_scene_phrases
+        )
+    ):
+        is_investigation_request = True
     if is_investigation_request:    
         tool_router_prompt = f"""
     너는 추리게임의 조사 행동 판별기다.
@@ -1342,6 +2007,8 @@ def process_user_input(user_input):
 
     예:
     - 피해자의 사망 원인을 조사해봐
+    - 피해자가 발견된 객실을 살펴봐
+    - 시신이 발견된 과정을 재구성해줘
     - 김동율을 인터뷰해봐
     - 피해자의 노트북을 포렌식해봐
     - 해성호 사고 기록을 조사해봐
@@ -1376,6 +2043,10 @@ def process_user_input(user_input):
 
             if function_name == "interview":
                 result = interview(arguments["person"])
+                return result
+
+            elif function_name == "scene_investigation":
+                result = scene_investigation(arguments["target"])
                 return result
 
             elif function_name == "forensic_investigation":
@@ -1480,7 +2151,16 @@ def process_user_input(user_input):
     너는 크루즈 선내 사건의 기록을 관리하고 탐정의 수사를 지원하는
     기록관 에코다.
 
-    ...
+    답변 규칙:
+    1. 아래의 '현재 확보된 자료'에 명시된 사실만 사용한다.
+    2. 자료에 없는 객실 구조, CCTV, 혈흔, 지문, 발자국, 물품이나
+       수사 결과를 일반적인 상식으로 추측하거나 만들어내지 않는다.
+    3. 질문에 필요한 기록이 아직 확보되지 않았다면 그 사실을
+       분명히 말하고, 어떤 종류의 조사가 필요한지만 짧게 안내한다.
+    4. 확보된 사실과 아직 확인되지 않은 사실을 구분한다.
+    5. 범인이나 잠긴 정보는 추측하지 않는다.
+    6. 기록관 에코의 차분하고 자연스러운 한국어로 답한다.
+    7. 불필요한 일반 수사 체크리스트를 나열하지 않는다.
 
     [현재 확보된 자료]
 
@@ -1492,7 +2172,134 @@ def process_user_input(user_input):
     """
 
     response = llm.invoke(prompt)
-    return response.content
+    answer = response.content
+    selected_sources = {
+        document.metadata.get("source_file")
+        for document in results
+    }
+
+    if (
+        get_story_chapter()["number"] == 1
+        and "SCENE_001_CABIN_INSPECTION.md"
+        in selected_sources
+        and is_cabin_clue_followup(user_input)
+    ):
+        mark_tutorial_event("cabin_record_followup")
+
+    return answer
+
+
+def process_user_input(user_input):
+    """모든 플레이어 입력을 하나의 의미 분류 관문으로 처리한다."""
+    cleaned_input = user_input.strip()
+
+    if not cleaned_input:
+        return (
+            "요청을 듣지 못했습니다. 조사할 대상이나 궁금한 기록을 "
+            "말씀해 주세요."
+        )
+
+    if len(cleaned_input) > 500:
+        return (
+            "한 번에 확인할 내용이 너무 많습니다. 조사 요청이나 "
+            "질문을 한 가지씩, 500자 이내로 나누어 말씀해 주세요."
+        )
+
+    decision = decide_game_action(
+        client,
+        cleaned_input,
+        build_director_context(),
+    )
+    intent = decision["intent"]
+    target = decision.get("target")
+
+    # 에코가 방금 제안한 필수 조사 대상을 플레이어가 질문형으로
+    # 되받아도, 아직 없는 기록을 RAG에 묻지 않고 조사 수락으로 본다.
+    required_action = get_required_next_action()
+    required_target_groups = {
+        "cabin": {"cabin", "cabin_door"},
+        "cabin_table": {"cabin_table"},
+        "cabin_floor": {"cabin_floor"},
+        "forensic": {"forensic"},
+        "discovery": {"discovery"},
+    }
+    if (
+        intent == "ask_evidence"
+        and required_action
+        and target
+        in required_target_groups.get(
+            required_action,
+            set(),
+        )
+    ):
+        decision = {
+            "intent": "investigate",
+            "target": required_action,
+            "confidence": decision.get("confidence", 1),
+        }
+        intent = "investigate"
+
+    if intent in {
+        "continue_investigation",
+        "investigate",
+        "progress_help",
+    }:
+        return execute_director_decision(decision)
+
+    if intent == "ask_evidence":
+        return _process_evidence_question(cleaned_input)
+
+    if intent == "ui_help":
+        if target == "hint":
+            return (
+                "막혔을 때는 왼쪽 사이드바의 **힌트 요청**을 "
+                "사용할 수 있습니다. 힌트는 게임 전체에서 세 번만 "
+                "사용할 수 있으니 필요한 순간에 요청해 주세요."
+            )
+
+        if target == "notebook":
+            return (
+                "화면 왼쪽의 **📓 사건 수첩 보기**를 누르면 지금까지 "
+                "직접 확보한 기록을 메인 화면에서 확인할 수 있습니다."
+            )
+
+        return (
+            "왼쪽 사이드바에서는 현재 장과 조사 진행도, 사건 수첩, "
+            "힌트를 확인할 수 있습니다. 진행이 막혔다면 "
+            "`다음에 뭘 해야 해?`라고 물어보셔도 됩니다."
+        )
+
+    if intent == "social_chat":
+        social_responses = {
+            "greeting": (
+                "반갑습니다, 탐정님. 현재 사건 기록을 확인하며 "
+                "조사를 지원하겠습니다."
+            ),
+            "thanks": (
+                "도움이 되었다면 다행입니다. 준비되셨다면 조사를 "
+                "계속하겠습니다."
+            ),
+            "identity": (
+                "저는 확보된 사건 기록을 정리하고 조사를 지원하는 "
+                "기록관 에코입니다."
+            ),
+        }
+        return social_responses.get(
+            target,
+            "저는 기록관 에코입니다. 사건 조사를 계속하시겠습니까?",
+        )
+
+    if intent == "out_of_scope":
+        return (
+            "그 요청은 현재 사건 기록의 범위를 벗어납니다. "
+            "조사 대상이나 확보한 단서에 관해 말씀해 주세요."
+        )
+
+    return (
+        "어떤 행동을 원하시는지 정확히 이해하지 못했습니다. "
+        "조사를 계속할지, 확보한 기록을 질문할지 조금 더 "
+        "구체적으로 말씀해 주세요."
+    )
 
 if __name__ == "__main__":
 
@@ -1754,6 +2561,9 @@ if __name__ == "__main__":
 
             if function_name == "digital_forensics":
                 result = digital_forensics()
+
+            elif function_name == "scene_investigation":
+                result = scene_investigation(arguments["target"])
 
             elif function_name == "access_log_analysis":
                 result = access_log_analysis()
