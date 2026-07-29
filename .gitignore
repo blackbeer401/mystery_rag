@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 backup/
+chroma_db/
+.streamlit/secrets.toml
+CASE_MASTER_v*.md
