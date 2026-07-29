@@ -5,7 +5,7 @@
 ## 1. 기준
 
 - 사건의 유일한 정답 기준은 `CASE_MASTER_v2.md`다.
-- 플레이어용 RAG 문서는 `data/available`과 `data/locked`의 30개 문서로 고정한다.
+- 플레이어용 RAG 문서는 `data/available`과 `data/locked`의 32개 문서로 고정한다.
 - `CASE_MASTER_v1.md`, `CASE_MASTER_v2.md`, 이 문서는 RAG에서 제외한다.
 - 한 문서는 하나의 조사 결과 또는 하나의 증거 해석만 담당한다.
 - 문서는 범인을 직접 선언하지 않고, 증명하는 사실과 증명하지 못하는 사실을 함께 제시한다.
@@ -21,11 +21,13 @@
 | `CUR_004_INITIAL_STATEMENTS.md` | 초기 진술 요약 | 검증 전 주장 |
 | `CUR_005_HAESUNG_OFFICIAL_SUMMARY.md` | 해성호 공식 설명 | 공식 책임구조와 한계 |
 
-## 3. 조사 후 공개 문서 — 25개
+## 3. 조사 후 공개 문서 — 27개
 
 ### 1장: 객실에 남은 흔적
 
+- `SCENE_001_CABIN_INSPECTION.md`: 객실 출입문과 실내 흔적, 해석의 한계
 - `FORENSIC_001_POSTMORTEM.md`: 경부 압박 사망과 법의학적 한계
+- `SCENE_002_DISCOVERY_RECONSTRUCTION.md`: 신고부터 객실 개방까지의 발견 흐름
 
 ### 2장: 네 사람의 진술
 
