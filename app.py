@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+import os
 from pathlib import Path
 from game import (
     process_user_input,
@@ -26,12 +27,22 @@ from game_state import (
     get_cabin_observations,
     get_chapter_one_reflection,
     set_chapter_one_reflection,
+    is_chapter_two_ready,
+    complete_chapter_two,
+    get_chapter_two_reflection,
+    set_chapter_two_reflection,
+    apply_debug_checkpoint,
+    get_active_interview,
 )
 
 st.set_page_config(
     page_title="해성호의 마지막 기록",
     page_icon="🔎"
 )
+
+# 로컬 2장 테스트를 위한 임시 플래그.
+# 배포하거나 main 브랜치에 병합하기 전 반드시 False로 바꾼다.
+LOCAL_DEBUG_TOOLS_ENABLED = True
 
 st.markdown(
     """
@@ -727,6 +738,81 @@ def render_investigation_sidebar():
         if summary["last_hint"]:
             st.info(summary["last_hint"])
 
+        env_debug_enabled = os.getenv(
+            "GAME_DEBUG",
+            "",
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if LOCAL_DEBUG_TOOLS_ENABLED or env_debug_enabled:
+            st.divider()
+            with st.expander("🛠 개발자 도구"):
+                checkpoint_labels = {
+                    "1장 시작": "chapter_1_start",
+                    "2장 시작": "chapter_2_start",
+                    "2장 · 박소영 인터뷰 직전": (
+                        "chapter_2_last_interview"
+                    ),
+                    "2장 · 진술 비교 직전": (
+                        "chapter_2_compare"
+                    ),
+                }
+                selected_checkpoint_label = st.selectbox(
+                    "테스트 지점",
+                    options=list(checkpoint_labels),
+                    key="debug_checkpoint_selector",
+                )
+                st.caption(
+                    "현재 플레이 기록을 테스트 상태로 교체합니다. "
+                    "실제 서비스에서는 표시되지 않습니다."
+                )
+
+                if st.button(
+                    "테스트 상태 적용",
+                    key="apply_debug_checkpoint_button",
+                    use_container_width=True,
+                ):
+                    checkpoint = checkpoint_labels[
+                        selected_checkpoint_label
+                    ]
+                    apply_debug_checkpoint(
+                        st.session_state,
+                        checkpoint,
+                    )
+                    st.session_state.screen = "game"
+                    st.session_state.game_phase = "investigation"
+                    st.session_state.selected_suspect = None
+                    st.session_state.final_theory = {}
+                    st.session_state.confirm_hint = False
+                    st.session_state.main_view = "chat"
+                    st.session_state.notebook_seen_count = 0
+                    st.session_state.notebook_previous_seen_count = 0
+                    st.session_state.notebook_acknowledged_count = 0
+
+                    if checkpoint == "chapter_1_start":
+                        st.session_state.messages = []
+                        st.session_state.intro_played = False
+                        st.session_state.tutorial_stage = (
+                            "awaiting_briefing"
+                        )
+                    else:
+                        st.session_state.messages = [{
+                            "role": "assistant",
+                            "content": (
+                                get_chapter_transition_message(2)
+                            ),
+                            "icon": "📖",
+                            "image": str(CHAPTER_IMAGES[2]),
+                            "layout": "chapter_card",
+                        }]
+                        st.session_state.intro_played = True
+                        st.session_state.tutorial_stage = "completed"
+
+                    st.rerun()
+
     return summary
 
 
@@ -760,26 +846,43 @@ def render_case_notebook_main(summary):
                 reviewed_count > 0
                 and reviewed_count > last_acknowledged
             ):
-                if is_chapter_one_ready():
-                    notebook_message = (
-                        "객실 현장·법의학·발견 경위 기록을 모두 "
-                        "확인하셨군요. 이제 조사 화면 아래의 "
-                        "**탐정의 첫 판단**에서 가장 주목한 기록 "
-                        "하나를 선택한 뒤 **판단 기록하기**를 "
-                        "눌러 주세요."
-                    )
-                else:
-                    notebook_message = (
-                        "새로 확보한 기록을 확인하셨군요. 기록에서 "
-                        "마음에 걸리는 사실이 있다면 제게 질문하거나 "
-                        "남은 조사를 이어가세요."
-                    )
+                # 인터뷰 중에는 수첩 열람 알림을 채팅에 끼워 넣지
+                # 않는다. 플레이어의 다음 질문이 인물에게 그대로
+                # 전달되도록 열람 상태만 갱신한다.
+                if get_active_interview() is None:
+                    if (
+                        summary["chapter_number"] == 1
+                        and is_chapter_one_ready()
+                    ):
+                        notebook_message = (
+                            "객실 현장·법의학·발견 경위 기록을 모두 "
+                            "확인하셨군요. 이제 조사 화면 아래의 "
+                            "**탐정의 첫 판단**에서 가장 주목한 기록 "
+                            "하나를 선택한 뒤 **판단 기록하기**를 "
+                            "눌러 주세요."
+                        )
+                    elif (
+                        summary["chapter_number"] == 2
+                        and is_chapter_two_ready()
+                    ):
+                        notebook_message = (
+                            "네 사람의 기본 진술을 모두 확인하셨군요. "
+                            "조사 화면 아래의 **가장 먼저 검증할 진술**에서 "
+                            "객관적인 기록과 대조할 항목을 선택한 뒤 "
+                            "**검증 우선순위 기록하기**를 눌러 주세요."
+                        )
+                    else:
+                        notebook_message = (
+                            "새로 확보한 기록을 확인하셨군요. 기록에서 "
+                            "마음에 걸리는 사실이 있다면 제게 질문하거나 "
+                            "남은 조사를 이어가세요."
+                        )
 
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": notebook_message,
-                    "icon": "📓",
-                })
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": notebook_message,
+                        "icon": "📓",
+                    })
                 st.session_state.notebook_acknowledged_count = (
                     reviewed_count
                 )
@@ -953,6 +1056,129 @@ def render_chapter_one_completion(summary):
                         "layout": "chapter_card",
                     })
                     st.session_state.tutorial_stage = "completed"
+                    st.session_state.main_view = "chat"
+                    st.rerun()
+
+
+def render_chapter_two_completion(summary):
+    """네 사람의 진술을 비교하고 검증할 기록을 선택한다."""
+    if (
+        summary["chapter_number"] != 2
+        or not is_chapter_two_ready()
+    ):
+        return
+
+    records_reviewed = (
+        st.session_state.get("notebook_seen_count", 0)
+        >= len(summary["notebook_entries"])
+    )
+    reflection = get_chapter_two_reflection()
+    reflection_options = {
+        "dongyul_access": (
+            "김동율은 정말 피해자 객실구역에 가지 않았는가"
+        ),
+        "hyunjun_conflict": (
+            "김현준은 피해자와의 업무상 언쟁을 얼마나 축소했는가"
+        ),
+        "kangwonmo_room": (
+            "강원모는 저녁 이후 대부분 자기 객실에 있었는가"
+        ),
+        "parksoyoung_message": (
+            "21시 15분 메시지는 피해자의 생존을 증명하는가"
+        ),
+    }
+    reflection_responses = {
+        "dongyul_access": (
+            "김동율의 원한은 강한 동기처럼 보이지만, 진술이 사실인지 "
+            "확인하려면 객실구역 목격기록이 필요합니다."
+        ),
+        "hyunjun_conflict": (
+            "업무 갈등의 존재와 실제 언쟁의 강도는 다를 수 있습니다. "
+            "당시 대화를 본 목격자의 기록으로 검증해야 합니다."
+        ),
+        "kangwonmo_room": (
+            "객실에 있었다는 말은 출입 시스템이 무엇을 기록하고 "
+            "무엇을 기록하지 않는지 확인해야 평가할 수 있습니다."
+        ),
+        "parksoyoung_message": (
+            "메시지가 도착한 시각과 피해자가 직접 작성한 시각은 "
+            "같지 않을 수 있습니다. 디지털 기록 확인이 필요합니다."
+        ),
+    }
+
+    with st.container(border=True):
+        st.markdown("## 제2장 진술 확보 완료")
+        st.markdown(
+            """
+            네 사람은 모두 사실의 일부를 말했지만, 진술만으로는
+            어느 말이 정확한지 판단할 수 없습니다.
+            """
+        )
+
+        if not records_reviewed:
+            st.info(
+                "사건 수첩을 열어 네 사람의 진술을 먼저 확인해 "
+                "주세요. 확인한 뒤 조사 화면으로 돌아오면 진술을 "
+                "비교할 수 있습니다."
+            )
+        elif reflection is None:
+            st.markdown("### 가장 먼저 검증할 진술")
+            st.caption(
+                "범인을 지목하는 단계가 아닙니다. 객관적인 기록과 "
+                "가장 먼저 대조하고 싶은 진술을 선택하세요."
+            )
+            selected_label = st.radio(
+                "검증할 진술을 하나 선택하세요",
+                options=list(reflection_options.values()),
+                index=None,
+                key="chapter_two_reflection_choice",
+            )
+
+            if st.button(
+                "검증 우선순위 기록하기",
+                type="primary",
+                disabled=selected_label is None,
+                use_container_width=True,
+            ):
+                selected_key = next(
+                    key
+                    for key, label in reflection_options.items()
+                    if label == selected_label
+                )
+                if set_chapter_two_reflection(selected_key):
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": (
+                            "**진술 비교 기록**\n\n"
+                            f"> {reflection_options[selected_key]}\n\n"
+                            f"{reflection_responses[selected_key]}"
+                        ),
+                        "icon": "🧭",
+                    })
+                    st.rerun()
+        else:
+            st.caption(
+                "네 사람의 진술 검토 및 검증 우선순위 기록 완료"
+            )
+            st.markdown(
+                f"**먼저 검증할 진술:** "
+                f"{reflection_options[reflection]}"
+            )
+
+        if reflection is not None:
+            if st.button(
+                "2장 정리하기",
+                type="primary",
+                use_container_width=True,
+            ):
+                if complete_chapter_two():
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": get_chapter_transition_message(3),
+                        "icon": "📖",
+                        "image": str(CHAPTER_IMAGES[3]),
+                        "layout": "chapter_card",
+                    })
                     st.session_state.main_view = "chat"
                     st.rerun()
 
@@ -1136,15 +1362,60 @@ if "selected_suspect" not in st.session_state:
 if "final_theory" not in st.session_state:
     st.session_state.final_theory = {}
 
+def _character_message_content(content, speaker):
+    """캐릭터 이름이 채팅 제목과 본문에 중복되지 않게 정리한다."""
+    if not speaker:
+        return content
+
+    lines = content.lstrip().splitlines()
+    if (
+        lines
+        and lines[0].startswith("## ")
+        and speaker in lines[0]
+    ):
+        lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        return "\n".join(lines)
+
+    return content
+
+
+def _detect_character_speaker(
+    content,
+    interview_before,
+    interview_after,
+):
+    """응답 본문이 실제 캐릭터 발화일 때만 인물 이름을 반환한다."""
+    stripped = content.lstrip()
+    candidates = [
+        interview_after,
+        interview_before,
+    ]
+    for person in candidates:
+        if (
+            person
+            and stripped.startswith("## ")
+            and person in stripped.splitlines()[0]
+        ):
+            return person
+    return None
+
+
 def render_saved_chat_message(message):
     """저장된 대화를 재생하되 지난 증거 카드는 작게 표시한다."""
     if message["role"] == "user":
         with st.chat_message("user", avatar="🕵️"):
             st.write(message["content"])
     else:
-        with st.chat_message("assistant", avatar="🤖"):
+        speaker = message.get("speaker")
+        avatar = "🗣️" if speaker else "🤖"
+        with st.chat_message("assistant", avatar=avatar):
             icon = message.get("icon", "📁")
-            st.markdown(f"### {icon} 기록관 에코")
+            if speaker:
+                st.markdown(f"### {speaker}")
+            else:
+                st.markdown(f"### {icon} 기록관 에코")
             if message.get("layout") == "opening_card":
                 render_opening_briefing(
                     message["image"]
@@ -1172,7 +1443,10 @@ def render_saved_chat_message(message):
                         use_container_width=True,
                     )
                 stream_text(
-                    message["content"],
+                    _character_message_content(
+                        message["content"],
+                        speaker,
+                    ),
                     animate=False,
                 )
 
@@ -1254,6 +1528,9 @@ if st.session_state.tutorial_stage == "awaiting_echo":
 render_chapter_one_completion(
     get_sidebar_summary()
 )
+render_chapter_two_completion(
+    get_sidebar_summary()
+)
 
 required_action_labels = {
     "cabin": "객실의 출입문과 잠금장치 확인",
@@ -1286,6 +1563,7 @@ user_input = st.chat_input(
 
 if user_input:
     chapter_before = get_story_chapter()["number"]
+    interview_before = get_active_interview()
     investigated_before = get_investigated()
     observations_before = get_cabin_observations()
 
@@ -1343,8 +1621,19 @@ if user_input:
             answer = get_investigation_status()
 
         else:
+            active_interview_person = get_active_interview()
+            interview_loading_labels = {
+                "김동율": "💬 김동율이 답변을 고르고 있습니다...",
+                "김현준": "💬 김현준이 답변을 정리하고 있습니다...",
+                "강원모": "💬 강원모가 답변을 준비하고 있습니다...",
+                "박소영": "💬 박소영이 기억을 되짚고 있습니다...",
+            }
+            loading_text = interview_loading_labels.get(
+                active_interview_person,
+                "🔎 에코가 기록을 확인하고 답변을 준비하고 있습니다...",
+            )
             with st.spinner(
-                "🔎 에코가 기록을 확인하고 답변을 준비하고 있습니다..."
+                loading_text
             ):
                 answer = process_user_input(user_input)
 
@@ -1538,8 +1827,18 @@ if user_input:
         observations_before,
     )
 
-    with st.chat_message("assistant", avatar="🤖"):
-        st.markdown(f"### {answer_icon} 기록관 에코")
+    interview_after = get_active_interview()
+    character_speaker = _detect_character_speaker(
+        answer,
+        interview_before,
+        interview_after,
+    )
+    answer_avatar = "🗣️" if character_speaker else "🤖"
+    with st.chat_message("assistant", avatar=answer_avatar):
+        if character_speaker:
+            st.markdown(f"### {character_speaker}")
+        else:
+            st.markdown(f"### {answer_icon} 기록관 에코")
         if chapter_image:
             render_illustrated_message(
                 chapter_image,
@@ -1553,7 +1852,13 @@ if user_input:
                 animate=True,
             )
         else:
-            stream_text(answer, animate=True)
+            stream_text(
+                _character_message_content(
+                    answer,
+                    character_speaker,
+                ),
+                animate=True,
+            )
 
     st.session_state.messages.append({
         "role": "assistant",
@@ -1570,6 +1875,7 @@ if user_input:
             )
         ),
         "evidence_card": evidence_card,
+        "speaker": character_speaker,
     })
 
     if coach_message:
