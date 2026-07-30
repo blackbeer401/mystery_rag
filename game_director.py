@@ -91,6 +91,7 @@ def decide_game_action(client, user_input, context):
 - 현재 목표: {context["chapter_goal"]}
 - 반드시 이어갈 다음 행동: {context["required_next_action"]}
 - 선택적으로 권장한 행동: {context["optional_suggestion"]}
+- 현재 실제 실행 가능한 행동: {context["available_actions"]}
 - 완료한 조사: {context["completed_actions"]}
 - 객실에서 확인한 구역: {context["cabin_observations"]}
 
@@ -114,6 +115,9 @@ def decide_game_action(client, user_input, context):
     플레이어가 직접 언급했다면, 문장이 질문형이어도 investigate로
     분류한다. 예: 다음 행동이 discovery인 상태의 "시신 발견 과정은?"
     또는 다음 행동이 forensic인 상태의 "사망 원인은?"
+12. 현재 실제 실행 가능한 행동 목록에 없는 새로운 조사를 임의로
+    만들어 investigate로 분류하지 않는다. 구현되지 않은 CCTV,
+    시설관리기록, 설계도 등의 요청은 ask_evidence로 분류한다.
 
 [플레이어 입력]
 {user_input}
