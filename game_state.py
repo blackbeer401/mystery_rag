@@ -23,6 +23,15 @@ _fallback_game_state = {
     "tutorial_reminders": set(),
     "chapter_one_closed": False,
     "chapter_one_reflection": None,
+    "chapter_two_closed": False,
+    "chapter_two_reflection": None,
+    "active_interview": None,
+    "interview_topics": {},
+    "interview_observations": {},
+    "interview_last_topics": {},
+    "interview_topic_counts": {},
+    "pending_interview_exit": False,
+    "pending_echo_action": None,
 }
 
 
@@ -40,6 +49,15 @@ def create_game_state():
         "tutorial_reminders": set(),
         "chapter_one_closed": False,
         "chapter_one_reflection": None,
+        "chapter_two_closed": False,
+        "chapter_two_reflection": None,
+        "active_interview": None,
+        "interview_topics": {},
+        "interview_observations": {},
+        "interview_last_topics": {},
+        "interview_topic_counts": {},
+        "pending_interview_exit": False,
+        "pending_echo_action": None,
     }
 
 
@@ -93,6 +111,42 @@ def bind_session_state(session_state):
         "chapter_one_reflection",
         None
     )
+    session_state.game_state_data.setdefault(
+        "chapter_two_closed",
+        False
+    )
+    session_state.game_state_data.setdefault(
+        "chapter_two_reflection",
+        None
+    )
+    session_state.game_state_data.setdefault(
+        "active_interview",
+        None
+    )
+    session_state.game_state_data.setdefault(
+        "interview_topics",
+        {}
+    )
+    session_state.game_state_data.setdefault(
+        "interview_observations",
+        {}
+    )
+    session_state.game_state_data.setdefault(
+        "interview_last_topics",
+        {}
+    )
+    session_state.game_state_data.setdefault(
+        "interview_topic_counts",
+        {}
+    )
+    session_state.game_state_data.setdefault(
+        "pending_interview_exit",
+        False
+    )
+    session_state.game_state_data.setdefault(
+        "pending_echo_action",
+        None
+    )
 
     _current_game_state.set(
         session_state.game_state_data
@@ -107,6 +161,84 @@ def reset_game_state(session_state=None):
         session_state.game_state_data = new_state
 
     _current_game_state.set(new_state)
+
+
+def apply_debug_checkpoint(session_state, checkpoint):
+    """개발 중 반복 플레이를 줄이는 일관된 테스트 상태를 만든다."""
+    reset_game_state(session_state)
+    state = _get_game_state()
+
+    if checkpoint == "chapter_1_start":
+        return
+
+    if checkpoint not in {
+        "chapter_2_start",
+        "chapter_2_last_interview",
+        "chapter_2_compare",
+    }:
+        raise ValueError(
+            f"등록되지 않은 디버그 체크포인트: {checkpoint}"
+        )
+
+    state["cabin_observations"].update({
+        "door",
+        "table",
+        "floor",
+    })
+    for investigation_id in CHAPTER_REQUIREMENTS[2]:
+        add_investigation(investigation_id)
+
+    state["chapter_one_reflection"] = "insufficient"
+    state["chapter_one_closed"] = True
+    state["tutorial_events"].update({
+        "coach_cabin",
+        "cabin_record_followup",
+    })
+
+    if checkpoint in {
+        "chapter_2_last_interview",
+        "chapter_2_compare",
+    }:
+        completed_interviews = {
+            "김동율": {
+                "id": "INTERVIEW_KIMDONGYUL_BASIC",
+                "topics": {
+                    "relationship",
+                    "alibi",
+                    "haesung_overview",
+                    "haesung_role",
+                },
+            },
+            "김현준": {
+                "id": "INTERVIEW_KIMHYUNJUN_BASIC",
+                "topics": {
+                    "contract",
+                    "argument",
+                    "consequence",
+                },
+            },
+            "강원모": {
+                "id": "INTERVIEW_KANGWONMO_BASIC",
+                "topics": {
+                    "alibi",
+                    "haesung",
+                    "victim_recent",
+                },
+            },
+        }
+        for person, interview_data in completed_interviews.items():
+            add_investigation(interview_data["id"])
+            state["interview_topics"][person] = (
+                interview_data["topics"].copy()
+            )
+
+    if checkpoint == "chapter_2_compare":
+        add_investigation("INTERVIEW_PARKSOYOUNG")
+        state["interview_topics"]["박소영"] = {
+            "message",
+            "absence",
+            "discovery",
+        }
 
 
 def _get_game_state():
@@ -385,6 +517,108 @@ def get_investigated():
 def get_unlocked_documents():
     """현재 플레이어가 RAG로 검색할 수 있는 해금 문서를 반환한다."""
     return _get_unlocked_document_set().copy()
+
+
+def get_active_interview():
+    """현재 대화 중인 인터뷰 대상자를 반환한다."""
+    return _get_game_state()["active_interview"]
+
+
+def start_interview_session(person):
+    """인물별 인터뷰 세션을 시작하거나 이어서 연다."""
+    state = _get_game_state()
+    state["active_interview"] = person
+    state["pending_interview_exit"] = False
+    state["interview_topics"].setdefault(person, set())
+
+
+def pause_interview_session():
+    """확인한 주제는 보존하고 현재 인터뷰 화면만 종료한다."""
+    state = _get_game_state()
+    state["active_interview"] = None
+    state["pending_interview_exit"] = False
+
+
+def set_pending_interview_exit(pending=True):
+    """인터뷰 종료 확인을 기다리는 상태를 저장한다."""
+    _get_game_state()["pending_interview_exit"] = pending
+
+
+def is_pending_interview_exit():
+    """직전 문맥이 인터뷰 종료 확인이었는지 반환한다."""
+    return _get_game_state()["pending_interview_exit"]
+
+
+def set_pending_echo_action(action_name):
+    """에코가 방금 제안하거나 되물은 행동을 저장한다."""
+    _get_game_state()["pending_echo_action"] = action_name
+
+
+def get_pending_echo_action():
+    """짧은 후속 입력이 이어갈 에코의 직전 행동."""
+    return _get_game_state()["pending_echo_action"]
+
+
+def clear_pending_echo_action():
+    """직전 에코 행동 문맥을 비운다."""
+    _get_game_state()["pending_echo_action"] = None
+
+
+def record_interview_topic(person, topic):
+    """인물에게 확인한 주제를 기록하고 복사본을 반환한다."""
+    state = _get_game_state()
+    topics = state["interview_topics"].setdefault(
+        person,
+        set(),
+    )
+    was_new = topic not in topics
+    topics.add(topic)
+    state["interview_last_topics"][person] = topic
+    counts = state["interview_topic_counts"].setdefault(
+        person,
+        {},
+    )
+    counts[topic] = counts.get(topic, 0) + 1
+    return was_new, topics.copy()
+
+
+def get_interview_topics(person):
+    """특정 인물에게 확인한 대화 주제를 반환한다."""
+    return _get_game_state()["interview_topics"].get(
+        person,
+        set(),
+    ).copy()
+
+
+def get_last_interview_topic(person):
+    """짧은 후속 질문을 이해하기 위한 직전 대화 주제."""
+    return _get_game_state()["interview_last_topics"].get(person)
+
+
+def get_interview_topic_count(person, topic):
+    """같은 인물에게 같은 주제를 질문한 누적 횟수."""
+    return _get_game_state()["interview_topic_counts"].get(
+        person,
+        {},
+    ).get(topic, 0)
+
+
+def record_interview_observation(person, observation):
+    """날카로운 질문으로 발견한 선택적 관찰을 기록한다."""
+    observations = _get_game_state()[
+        "interview_observations"
+    ].setdefault(person, set())
+    was_new = observation not in observations
+    observations.add(observation)
+    return was_new
+
+
+def get_interview_observations(person):
+    """특정 인물에게서 발견한 선택적 관찰을 반환한다."""
+    return _get_game_state()["interview_observations"].get(
+        person,
+        set(),
+    ).copy()
 
 
 def mark_tutorial_event(event_name):
@@ -700,6 +934,14 @@ STORY_CHAPTERS = {
             "문은 부서지지 않았고 객실 전체를 뒤엎은 싸움도 "
             "없었습니다. 그러나 최종인은 누군가의 물리적 개입으로 "
             "사망했습니다.\n\n"
+            "**사전에 확인된 공식 기록**\n\n"
+            "8년 전 화물선 해성호는 악천후 속에서 좌초해 인명피해가 "
+            "발생했습니다. 공식 조사에서는 조타계통 이상 가능성, "
+            "현장 대응, 운항·안전관리 판단이 함께 지적됐고 당시 현장 "
+            "책임자 김동율에게 상당한 책임이 부과됐습니다. 최종인은 "
+            "사고 이후 자료와 보고를 정리하는 과정에 참여했습니다. "
+            "다만 위험정보가 실제로 누구에게 어느 수준까지 전달됐는지는 "
+            "이 공식 기록만으로 판단할 수 없습니다.\n\n"
             "한 사람은 8년 전의 원한을 품고 있었고, 한 사람은 "
             "그날 저녁 피해자와 충돌했습니다. 또 다른 사람은 "
             "과거 사고의 관계자였으며, 마지막 한 사람은 그가 "
@@ -817,6 +1059,44 @@ def complete_chapter_one():
     return True
 
 
+def is_chapter_two_ready():
+    """2장의 네 가지 기본 진술을 모두 확보했는지 반환한다."""
+    return CHAPTER_REQUIREMENTS[3].issubset(
+        _get_investigated_set()
+    )
+
+
+def get_chapter_two_reflection():
+    """플레이어가 2장 끝에 선택한 검증 대상을 반환한다."""
+    return _get_game_state()["chapter_two_reflection"]
+
+
+def set_chapter_two_reflection(reflection_key):
+    """2장의 진술 비교 판단을 한 번 기록한다."""
+    state = _get_game_state()
+
+    if state["chapter_two_reflection"] is not None:
+        return False
+
+    state["chapter_two_reflection"] = reflection_key
+    return True
+
+
+def complete_chapter_two():
+    """진술 비교 판단 후 플레이어가 2장을 직접 종료한다."""
+    state = _get_game_state()
+
+    if (
+        not is_chapter_two_ready()
+        or state["chapter_two_reflection"] is None
+    ):
+        return False
+
+    state["chapter_two_closed"] = True
+    state["active_interview"] = None
+    return True
+
+
 def get_story_chapter():
     """완료한 핵심 조사로 현재 스토리 장을 계산한다."""
     investigated = _get_investigated_set()
@@ -832,6 +1112,13 @@ def get_story_chapter():
                 next_chapter == 2
                 and not _get_game_state()[
                     "chapter_one_closed"
+                ]
+            ):
+                break
+            if (
+                next_chapter == 3
+                and not _get_game_state()[
+                    "chapter_two_closed"
                 ]
             ):
                 break
