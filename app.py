@@ -1329,6 +1329,14 @@ if "main_view" not in st.session_state:
     st.session_state.main_view = "chat"
 if "notebook_seen_count" not in st.session_state:
     st.session_state.notebook_seen_count = 0
+if "is_processing_chat" not in st.session_state:
+    st.session_state.is_processing_chat = False
+if (
+    st.session_state.is_processing_chat
+    and "pending_chat_input" not in st.session_state
+):
+    # 처리 중 예외나 새로고침이 발생해도 입력창이 영구 잠기지 않는다.
+    st.session_state.is_processing_chat = False
 
 st.markdown(
     f"""
@@ -1557,8 +1565,37 @@ elif (
         st.caption("현재 조사 · 제1장 기록 정리")
 
 # 사용자 입력
-user_input = st.chat_input(
-    "조사 내용이나 질문을 입력하세요."
+def _queue_chat_input():
+    """제출 즉시 입력을 잠그고 다음 실행에서 한 번만 처리한다."""
+    submitted = st.session_state.get(
+        "main_chat_input",
+        "",
+    ).strip()
+    if submitted and not st.session_state.is_processing_chat:
+        st.session_state.pending_chat_input = submitted
+        st.session_state.is_processing_chat = True
+
+
+st.chat_input(
+    (
+        "답변을 처리하고 있습니다..."
+        if st.session_state.is_processing_chat
+        else "조사 내용이나 질문을 입력하세요."
+    ),
+    key="main_chat_input",
+    disabled=st.session_state.is_processing_chat,
+    on_submit=_queue_chat_input,
+)
+
+if st.session_state.is_processing_chat:
+    st.caption(
+        "기록관 또는 인터뷰 인물이 응답을 마칠 때까지 "
+        "새 메시지를 입력할 수 없습니다."
+    )
+
+user_input = st.session_state.pop(
+    "pending_chat_input",
+    None,
 )
 
 if user_input:
@@ -1894,4 +1931,5 @@ if user_input:
             "icon": "💬",
         })
 
+    st.session_state.is_processing_chat = False
     st.rerun()
