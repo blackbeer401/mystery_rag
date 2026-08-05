@@ -33,7 +33,9 @@ from game_state import (
     set_chapter_two_reflection,
     apply_debug_checkpoint,
     get_active_interview,
+    get_interview_router_usage,
 )
+from memory_prototype_ui import render_memory_prototype
 
 st.set_page_config(
     page_title="해성호의 마지막 기록",
@@ -750,6 +752,21 @@ def render_investigation_sidebar():
         if LOCAL_DEBUG_TOOLS_ENABLED or env_debug_enabled:
             st.divider()
             with st.expander("🛠 개발자 도구"):
+                if st.button(
+                    "기억 복원 시제품 열기",
+                    key="open_memory_prototype",
+                    use_container_width=True,
+                ):
+                    st.session_state.main_view = "memory_prototype"
+                    st.rerun()
+
+                router_usage = get_interview_router_usage()
+                st.caption(
+                    "인터뷰 의미 분류 LLM 호출: "
+                    f"{router_usage['used']} / "
+                    f"{router_usage['limit']}회 · "
+                    "명확한 질문과 캐시된 질문은 호출하지 않습니다."
+                )
                 checkpoint_labels = {
                     "1장 시작": "chapter_1_start",
                     "2장 시작": "chapter_2_start",
@@ -1353,6 +1370,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 sidebar_summary = render_investigation_sidebar()
+
+if st.session_state.main_view == "memory_prototype":
+    render_memory_prototype()
+    st.stop()
 
 if st.session_state.main_view == "notebook":
     render_case_notebook_main(sidebar_summary)
