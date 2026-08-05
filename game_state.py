@@ -32,6 +32,8 @@ _fallback_game_state = {
     "interview_topic_counts": {},
     "pending_interview_exit": False,
     "pending_echo_action": None,
+    "interview_route_cache": {},
+    "interview_llm_call_count": 0,
 }
 
 
@@ -58,6 +60,8 @@ def create_game_state():
         "interview_topic_counts": {},
         "pending_interview_exit": False,
         "pending_echo_action": None,
+        "interview_route_cache": {},
+        "interview_llm_call_count": 0,
     }
 
 
@@ -147,6 +151,14 @@ def bind_session_state(session_state):
         "pending_echo_action",
         None
     )
+    session_state.game_state_data.setdefault(
+        "interview_route_cache",
+        {}
+    )
+    session_state.game_state_data.setdefault(
+        "interview_llm_call_count",
+        0
+    )
 
     _current_game_state.set(
         session_state.game_state_data
@@ -215,6 +227,7 @@ def apply_debug_checkpoint(session_state, checkpoint):
                     "contract",
                     "argument",
                     "consequence",
+                    "alibi",
                 },
             },
             "강원모": {
@@ -562,6 +575,45 @@ def get_pending_echo_action():
 def clear_pending_echo_action():
     """직전 에코 행동 문맥을 비운다."""
     _get_game_state()["pending_echo_action"] = None
+
+
+INTERVIEW_LLM_CALL_LIMIT = 40
+
+
+def get_cached_interview_route(cache_key):
+    """같은 애매한 질문의 이전 분류 결과를 재사용한다."""
+    return _get_game_state()["interview_route_cache"].get(cache_key)
+
+
+def cache_interview_route(cache_key, route):
+    """세션별 인터뷰 분류 캐시에 최대 100개 결과를 저장한다."""
+    cache = _get_game_state()["interview_route_cache"]
+    if len(cache) >= 100:
+        oldest_key = next(iter(cache))
+        cache.pop(oldest_key, None)
+    cache[cache_key] = route
+
+
+def can_call_interview_router():
+    """한 게임 세션에서 허용된 저비용 분류 호출인지 확인한다."""
+    return (
+        _get_game_state()["interview_llm_call_count"]
+        < INTERVIEW_LLM_CALL_LIMIT
+    )
+
+
+def record_interview_router_call():
+    """실제 외부 분류 호출을 시도한 횟수를 기록한다."""
+    state = _get_game_state()
+    state["interview_llm_call_count"] += 1
+
+
+def get_interview_router_usage():
+    """디버깅과 비용 확인을 위한 현재 분류 호출 횟수."""
+    return {
+        "used": _get_game_state()["interview_llm_call_count"],
+        "limit": INTERVIEW_LLM_CALL_LIMIT,
+    }
 
 
 def record_interview_topic(person, topic):

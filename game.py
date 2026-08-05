@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from game_director import decide_game_action
+from interview_router import classify_interview_topic_semantically
 from character_dialogue import (
     INTERVIEW_OPENINGS,
     INTERVIEW_DIALOGUE,
@@ -50,6 +51,10 @@ from game_state import (
     set_pending_echo_action,
     get_pending_echo_action,
     clear_pending_echo_action,
+    get_cached_interview_route,
+    cache_interview_route,
+    can_call_interview_router,
+    record_interview_router_call,
 )
 
 load_dotenv()
@@ -939,6 +944,18 @@ def _normalize_interview_input(user_input):
     )
 
 
+def _with_object_particle(name):
+    """인물 이름에 맞는 목적격 조사 을/를을 붙인다."""
+    last_character = name[-1]
+    if "가" <= last_character <= "힣":
+        has_final_consonant = (
+            (ord(last_character) - ord("가")) % 28
+            != 0
+        )
+        return name + ("을" if has_final_consonant else "를")
+    return name + "을"
+
+
 CASE_TIME_CONTEXT = {
     "current_phase": "사건 당일 밤, 시신 발견 이후",
     "discovery_time": "23시 20분",
@@ -1120,8 +1137,11 @@ INTERVIEW_TOPIC_LABELS = {
     "김현준": {
         "relationship": "피해자와의 관계",
         "contract": "계약 문제",
+        "contract_detail": "계약 절차를 둘러싼 구체적인 이견",
         "argument": "사건 당일 대화",
+        "argument_detail": "대화 당시 언쟁의 강도",
         "consequence": "갈등으로 예상된 불이익",
+        "alibi": "대화 이후 사건 당일 행적",
     },
     "강원모": {
         "relationship": "피해자와의 관계",
@@ -1430,7 +1450,8 @@ def _deep_interview_guidance(user_input):
     if INTERVIEW_RECORD_IDS[person] not in investigated:
         return (
             f"{person}의 기본 인터뷰부터 완료해야 합니다. "
-            f"`{person}을 인터뷰하자`라고 말씀해 주세요."
+            f"`{_with_object_particle(person)} 인터뷰하자`라고 "
+            "말씀해 주세요."
         )
 
     evidence_requirements = {
@@ -1809,6 +1830,60 @@ def _process_interview_echo_request(person, request):
     )
 
 
+def _semantic_interview_topic(person, user_input):
+    """규칙으로 모호한 질문만 비용 제한 아래 주제 분류한다."""
+    last_topic = get_last_interview_topic(person)
+    normalized = _normalize_interview_input(user_input)[:200]
+    cache_key = "|".join(
+        (
+            person,
+            last_topic or "",
+            normalized,
+        )
+    )
+    cached = get_cached_interview_route(cache_key)
+    if cached is not None:
+        cached_topic = cached.get("topic")
+        if (
+            cached_topic == "unclear"
+            or cached_topic
+            not in INTERVIEW_DIALOGUE.get(person, {})
+        ):
+            return None
+        return cached_topic
+
+    if not can_call_interview_router():
+        return None
+
+    record_interview_router_call()
+    route = classify_interview_topic_semantically(
+        client,
+        person,
+        user_input,
+        last_topic=last_topic,
+    )
+    if route.get("confidence", 0) >= 0.72:
+        cache_interview_route(cache_key, route)
+        resolved_topic = route.get("topic")
+        if resolved_topic and resolved_topic != "unclear":
+            resolved_key = "|".join(
+                (
+                    person,
+                    resolved_topic,
+                    normalized,
+                )
+            )
+            cache_interview_route(resolved_key, route)
+
+    topic = route.get("topic")
+    if (
+        topic == "unclear"
+        or topic not in INTERVIEW_DIALOGUE.get(person, {})
+    ):
+        return None
+    return topic
+
+
 def process_active_interview(user_input):
     """진행 중인 캐릭터 인터뷰 입력을 일반 RAG보다 먼저 처리한다."""
     person = get_active_interview()
@@ -1846,7 +1921,8 @@ def process_active_interview(user_input):
         pause_interview_session()
         return (
             f"{person} 인터뷰를 잠시 중단했습니다. 지금까지 확인한 "
-            f"주제는 유지됩니다. 다시 시작하려면 **{person}을 "
+            f"주제는 유지됩니다. 다시 시작하려면 "
+            f"**{_with_object_particle(person)} "
             "인터뷰하자**라고 말씀해 주세요."
         )
 
@@ -1880,6 +1956,15 @@ def process_active_interview(user_input):
         return _process_interview_echo_request(
             person,
             "뭘더물어",
+        )
+
+    if normalized in {
+        "계속질문할게", "계속물어볼게", "계속할게",
+        "질문계속할게", "더물어볼게",
+    }:
+        return (
+            f"## {person}\n\n"
+            "> “네. 확인할 내용이 있다면 계속 질문해 주십시오.”"
         )
 
     if any(
@@ -2056,6 +2141,7 @@ def process_active_interview(user_input):
     )
     switch_language = (
         "인터뷰", "질문", "물어", "바꿔", "전환",
+        "불러", "불러와", "데려", "데려와", "호출",
     )
     if (
         requested_person
@@ -2065,10 +2151,7 @@ def process_active_interview(user_input):
         )
     ):
         pause_interview_session()
-        return (
-            f"{person} 인터뷰를 잠시 중단하고 대상을 변경합니다.\n\n"
-            + interview(requested_person)
-        )
+        return interview(requested_person)
     if normalized in {"그만", "나가기"}:
         set_pending_interview_exit(True)
         return (
@@ -2080,7 +2163,8 @@ def process_active_interview(user_input):
         pause_interview_session()
         return (
             f"{person} 인터뷰를 잠시 중단했습니다. 지금까지 확인한 "
-            f"주제는 유지됩니다. 다시 시작하려면 **{person}을 "
+            f"주제는 유지됩니다. 다시 시작하려면 "
+            f"**{_with_object_particle(person)} "
             "인터뷰하자**라고 말씀해 주세요."
         )
 
@@ -2120,6 +2204,44 @@ def process_active_interview(user_input):
 
     if person in INTERVIEW_DIALOGUE:
         if person == "김현준":
+            if "어제" in normalized and not any(
+                term in normalized
+                for term in ("사건당일", "사건날")
+            ):
+                return (
+                    "## 김현준\n\n"
+                    "> “어제라면 사건 전날을 말씀하시는 겁니까? "
+                    "현재 확인하시는 것이 사건 당일 행적이라면 "
+                    "그날을 기준으로 질문해 주십시오.”"
+                )
+
+            if any(
+                term in normalized
+                for term in ("8년전", "팔년전", "해성호때")
+            ):
+                return (
+                    "## 김현준\n\n"
+                    "> “8년 전 일과 현재 계약 문제를 어떤 이유로 "
+                    "연결하시는지 먼저 설명해 주시겠습니까? 현재 "
+                    "최종인 씨와의 업무 관계나 사건 당일 행동에 "
+                    "관해서라면 답변드리겠습니다.”"
+                )
+
+            if (
+                get_last_interview_topic("김현준")
+                in {"argument", "argument_detail"}
+                and normalized.rstrip("?!.,")
+                in {
+                    "최종인이랑", "최종인과", "최종인하고",
+                    "피해자랑", "그사람이랑",
+                }
+            ):
+                return (
+                    "## 김현준\n\n"
+                    "> “네, 19시 30분대에 최종인 씨와 "
+                    "대화했습니다.”"
+                )
+
             argument_evidence_language = (
                 "목격", "진술", "증언", "이수진",
             )
@@ -2179,6 +2301,39 @@ def process_active_interview(user_input):
                     "제 진술을 바꿀 수는 없습니다. 확인된 기록을 "
                     "제시해 주십시오.”"
                 )
+
+            if (
+                "INTERVIEW_KIMHYUNJUN_DEEP"
+                in get_investigated()
+            ):
+                if any(
+                    concept in normalized
+                    for concept in (
+                        "왜처음", "왜축소", "왜숨", "숨겼",
+                        "거짓말", "말바꿨",
+                    )
+                ):
+                    return (
+                        "## 김현준\n\n"
+                        "> “사건 직전에 피해자와 크게 다퉜다는 사실이 "
+                        "알려지면 곧바로 의심받을 거라고 생각했습니다. "
+                        "그래서 대화의 강도를 축소해서 말했습니다. "
+                        "그 판단이 잘못이었다는 건 인정합니다.”"
+                    )
+                if any(
+                    concept in normalized
+                    for concept in (
+                        "크게싸운", "실제로싸", "언쟁한거",
+                        "언쟁맞", "다툰거", "목소리높인거",
+                    )
+                ):
+                    return (
+                        "## 김현준\n\n"
+                        "> “네, 서로 목소리를 높인 것은 맞습니다. "
+                        "하지만 위협하거나 물리적으로 충돌한 적은 "
+                        "없습니다. 그 이후 행적은 별도로 확인해 "
+                        "주십시오.”"
+                    )
 
         if person == "강원모":
             investigated = get_investigated()
@@ -2253,6 +2408,71 @@ def process_active_interview(user_input):
             person,
             user_input,
         )
+        if person == "김현준":
+            if (
+                topic == "contract"
+                and any(
+                    term in normalized
+                    for term in (
+                        "정확히", "구체적", "뭐였", "무엇이",
+                        "왜문제", "뭐가문제",
+                    )
+                )
+            ):
+                topic = "contract_detail"
+            elif (
+                topic == "argument"
+                and any(
+                    term in normalized
+                    for term in (
+                        "얼마나", "강도", "심했", "목소리높",
+                        "위협", "물리적",
+                    )
+                )
+            ):
+                topic = "argument_detail"
+
+        if topic is None and person == "김현준":
+            last_topic = get_last_interview_topic("김현준")
+            short_followup = len(normalized) <= 14
+            if (
+                last_topic in {"contract", "contract_detail"}
+                and short_followup
+                and any(
+                    term in normalized
+                    for term in (
+                        "구체적", "무슨", "어떤", "왜문제",
+                        "뭐가문제", "그래서",
+                    )
+                )
+            ):
+                topic = "contract_detail"
+            elif (
+                last_topic in {"argument", "argument_detail"}
+                and short_followup
+                and any(
+                    term in normalized
+                    for term in (
+                        "얼마나", "왜", "심했", "그래서",
+                        "진짜", "구체적",
+                    )
+                )
+            ):
+                topic = "argument_detail"
+            elif (
+                last_topic == "alibi"
+                and short_followup
+                and any(
+                    term in normalized
+                    for term in ("그뒤", "이후", "어디", "그래서")
+                )
+            ):
+                topic = "alibi"
+        if topic is None:
+            topic = _semantic_interview_topic(
+                person,
+                user_input,
+            )
         if topic is None:
             return (
                 f"## {person}\n\n"
