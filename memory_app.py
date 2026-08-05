@@ -8,10 +8,11 @@ from pathlib import Path
 import streamlit as st
 
 from memory_prototype_ui import render_memory_prototype
-from memory_reconstruction import create_memory_state
+from memory_reconstruction import MemoryState, create_memory_state, get_memory_phase
 from memory_story import (
     CASE_TITLE, ECHO_INTRO_LINES, ECHO_PROFILE, GAME_TITLE,
-    PLAYER_ROLE, PROLOGUE_BEATS, PROLOGUE_DISCOVERY_LINES,
+    NEXT_RECORD_TEASER, PLAYER_ROLE, PROLOGUE_BEATS,
+    PROLOGUE_DISCOVERY_LINES,
 )
 
 
@@ -53,6 +54,9 @@ def _reset_new_game() -> None:
     for key in tuple(st.session_state):
         if key.startswith("memory_relation_") or key in {
             "memory_echo_last", "memory_echo_input", "memory_connection_flash",
+            "memory_initial_hypothesis", "memory_workspace_selector",
+            "memory_prototype_reset_pending", "memory_forensic_request",
+            "memory_forensic_flash",
         }:
             del st.session_state[key]
     st.session_state.memory_screen = "prologue"
@@ -69,6 +73,22 @@ def _render_title() -> None:
     with center:
         if st.button("새 기억 기록 열기", type="primary", use_container_width=True):
             _reset_new_game()
+        saved_payload = st.session_state.get("memory_prototype_state")
+        if saved_payload:
+            try:
+                saved_state = MemoryState.from_json(saved_payload)
+                saved_phase = get_memory_phase(saved_state)
+            except (TypeError, ValueError):
+                saved_phase = None
+            if saved_phase and saved_phase != "briefing":
+                destination = (
+                    "chapter_complete"
+                    if saved_phase == "complete"
+                    else "episode_2115"
+                )
+                if st.button("진행 중인 기록 이어가기", use_container_width=True):
+                    _set_screen(destination)
+                st.caption("이어하기는 현재 브라우저 세션에 저장된 기록을 사용합니다.")
     with st.expander("이 게임에 대하여"):
         st.write(
             "등장인물의 기억과 객관 기록을 비교해 사건을 재구성하는 수사극입니다. "
@@ -94,6 +114,18 @@ def _render_prologue() -> None:
         with st.chat_message("assistant", avatar="👤"):
             st.markdown(f"**{speaker}**")
             st.write(line)
+    st.markdown(
+        """
+        <div class="scene-log">
+            <div class="scene-time">REWIND · 21:15</div>
+            <div class="scene-text">
+                발견 기록을 두 시간 전으로 되감습니다. 박소영의 휴대전화 화면에
+                죽은 사람의 이름이 남아 있습니다.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.markdown("### 현장에 남은 세 가지 의문")
     message_col, room_col, usb_col = st.columns(3)
     with message_col:
@@ -153,7 +185,17 @@ def _render_chapter_complete() -> None:
         "메시지가 만든 잘못된 전제가 제거되면서 조사해야 할 시간이 앞으로 이동했습니다. "
         "정확한 사망시각과 범인을 밝히려면 19시 55분 이후의 목격과 출입기록을 복원해야 합니다."
     )
-    st.caption("다음 기록 · 마지막으로 본 사람 — 이후 단계에서 제작 예정")
+    st.markdown("### 새 기억 조각 감지")
+    with st.container(border=True):
+        st.caption(f"UNSORTED MEMORY · {NEXT_RECORD_TEASER['time']}")
+        st.markdown(f"**{NEXT_RECORD_TEASER['title']}**")
+        st.write(NEXT_RECORD_TEASER["body"])
+        st.caption(
+            f"출처 · {NEXT_RECORD_TEASER['source']} · "
+            f"검증 상태 · {NEXT_RECORD_TEASER['status']}"
+        )
+        st.caption(NEXT_RECORD_TEASER["next_title"])
+    st.warning("방문자의 신원과 진술은 아직 복원되지 않았습니다.")
     if st.button("타이틀로 돌아가기", use_container_width=True):
         _set_screen("title")
 

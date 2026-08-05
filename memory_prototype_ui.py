@@ -6,16 +6,41 @@ import streamlit as st
 
 from memory_echo import analyze_hypothesis
 from memory_reconstruction import (
-    CLAIMS, EVIDENCE, INITIAL_HYPOTHESES, RELATIONS, MemoryState,
-    can_run_message_forensics, can_submit_reconstruction,
-    connect_workspace, create_memory_state, run_message_forensics,
+    CLAIMS, EVIDENCE, FORENSIC_REQUESTS, INITIAL_HYPOTHESES,
+    RELATIONS, MemoryState,
+    can_submit_reconstruction, connect_workspace, create_memory_state,
     set_workspace, start_memory_scene, submit_reconstruction,
-    get_memory_phase, record_initial_hypothesis,
+    get_adaptive_hint, get_memory_phase, record_initial_hypothesis,
+    request_message_forensics,
 )
-from memory_story import STORY_BEATS
+from memory_story import INITIAL_HYPOTHESIS_RESPONSES, PLAYER_GUIDES, STORY_BEATS
 
 
 STATE_KEY = "memory_prototype_state"
+
+RESETTABLE_WIDGET_KEYS = (
+    "memory_workspace_selector",
+    "memory_echo_last",
+    "memory_echo_input",
+    "memory_initial_hypothesis",
+    "memory_forensic_request",
+    "memory_relation_connect_message",
+    "memory_relation_connect_window",
+    "memory_final_alive",
+    "memory_final_message",
+    "memory_final_conclusion",
+)
+
+RELATION_OPTION_ORDER = {
+    "connect_message": (
+        "SAME_EVENT", "ONE_PROVES_OTHER", "RECEIPT_VS_SURVIVAL",
+        "LAST_SEEN_VS_DISCOVERY",
+    ),
+    "connect_window": (
+        "ONE_PROVES_OTHER", "SAME_EVENT", "LAST_SEEN_VS_DISCOVERY",
+        "RECEIPT_VS_SURVIVAL",
+    ),
+}
 
 
 def _load_state() -> MemoryState:
@@ -34,8 +59,8 @@ def _save_state(state: MemoryState) -> None:
 
 def render_memory_prototype(show_back_button: bool = True) -> None:
     if st.session_state.pop("memory_prototype_reset_pending", False):
-        st.session_state.pop("memory_workspace_selector", None)
-        st.session_state.pop("memory_echo_last", None)
+        for key in RESETTABLE_WIDGET_KEYS:
+            st.session_state.pop(key, None)
     state = _load_state()
     phase = get_memory_phase(state)
     header, back = st.columns([5, 1])
@@ -52,9 +77,14 @@ def render_memory_prototype(show_back_button: bool = True) -> None:
             st.rerun()
 
     _render_story_beat(phase)
+    _render_player_guide(phase)
     connection_flash = st.session_state.pop("memory_connection_flash", None)
     if connection_flash:
         (st.success if connection_flash["success"] else st.error)(connection_flash["message"])
+        if not connection_flash["success"]:
+            hint = get_adaptive_hint(state, phase)
+            if hint:
+                st.info(f"에코 보조 분석 · {hint}")
     if phase == "briefing":
         st.info(
             "현재 확보된 자료를 바탕으로 에코가 구성한 장면이며 "
@@ -73,6 +103,8 @@ def render_memory_prototype(show_back_button: bool = True) -> None:
     elif phase == "initial_hypothesis":
         _render_initial_hypothesis(state)
     elif phase in ("connect_message", "connect_window"):
+        if phase == "connect_window":
+            _render_message_hypothesis_result()
         _render_connection(state, phase)
     elif phase == "final_reconstruction":
         _render_final(state)
@@ -125,6 +157,17 @@ def _render_story_beat(phase: str) -> None:
     st.info(f"현재 목표 · {beat['objective']}")
 
 
+def _render_player_guide(phase: str) -> None:
+    guide = PLAYER_GUIDES.get(phase)
+    if not guide:
+        return
+    with st.container(border=True):
+        st.caption(f"처음 하는 조사관 안내 · {guide['step']}")
+        st.markdown(f"**지금 할 일**  \n{guide['action']}")
+        st.caption(f"왜 하는가 · {guide['reason']}")
+        st.caption(f"진행 규칙 · {guide['rule']}")
+
+
 def _render_progress(phase: str) -> None:
     order = ("initial_hypothesis", "inspect_message", "connect_message", "connect_window", "final_reconstruction", "complete")
     step = min(order.index(phase) + 1, 5)
@@ -135,10 +178,20 @@ def _render_timeline(state: MemoryState) -> None:
     st.subheader("확인된 시간축")
     columns = st.columns(4)
     timeline = (
-        ("19:55", "직접 생존 확인"),
-        ("21:15", "예약 메시지 자동 전송" if "CLAIM_MESSAGE_NOT_SURVIVAL" in state.unlocked_claim_ids else "메시지 수신"),
+        (
+            "19:55",
+            "마지막 생존 목격"
+            if "CLAIM_CONFIRMED_WINDOW" in state.unlocked_claim_ids
+            else "서민재와 대화",
+        ),
+        (
+            "21:15",
+            "자동 전송 실행"
+            if "CLAIM_MESSAGE_NOT_SURVIVAL" in state.unlocked_claim_ids
+            else "업무 메시지 수신",
+        ),
         ("22:30", "업무 불참"),
-        ("23:20", "사망 발견"),
+        ("23:20", "사망 공식 확인"),
     )
     for column, (time, label) in zip(columns, timeline):
         with column:
@@ -156,24 +209,52 @@ def _render_evidence_cards(evidence_ids) -> None:
                 st.caption(f"{item.source_type} · {item.time}")
                 st.markdown(f"#### {item.title}")
                 st.write(item.body)
-                st.markdown(f"**판단 가능**  \n{item.proves}")
-                st.markdown(f"**판단 불가능**  \n{item.does_not_prove}")
+                st.caption(f"관련 인물 · {', '.join(item.people)}")
 
 
 def _render_message_investigation(state: MemoryState) -> None:
-    st.subheader("기억 속 기록")
-    _render_evidence_cards(("MESSAGE_2115",))
     if "MESSAGE_2115" not in state.workspace_ids:
-        if st.button("메시지 기록을 선택", type="primary", use_container_width=True):
-            set_workspace(state, ["MESSAGE_2115"])
-            _save_state(state)
-            st.rerun()
-    elif can_run_message_forensics(state):
-        if st.button("작성·전송 흔적 복원", type="primary", use_container_width=True):
-            run_message_forensics(state)
+        set_workspace(state, ["MESSAGE_2115"])
+        _save_state(state)
+    selected_hypothesis = INITIAL_HYPOTHESES[state.initial_hypothesis_id]
+    st.caption("당신의 초기 가설")
+    st.markdown(f"> {selected_hypothesis}")
+    st.info(INITIAL_HYPOTHESIS_RESPONSES[state.initial_hypothesis_id])
+    st.subheader("21시 15분 수신 기록")
+    _render_evidence_cards(("MESSAGE_2115",))
+    st.warning(
+        "이 화면은 발신 계정과 수신 시각만 보여줍니다. "
+        "메시지가 언제 작성됐고 어떤 방식으로 실행됐는지는 기록되어 있지 않습니다."
+    )
+    st.markdown("### 어떤 기록을 먼저 요청할 것인가")
+    request_id = st.radio(
+        "작성 시점과 실행 방식을 확인할 수 있는 기록을 선택하세요.",
+        options=list(FORENSIC_REQUESTS),
+        format_func=lambda item: FORENSIC_REQUESTS[item]["label"],
+        index=None,
+        key="memory_forensic_request",
+    )
+    if st.button(
+        "포렌식 기록 요청",
+        type="primary",
+        disabled=request_id is None,
+        use_container_width=True,
+    ):
+        result = request_message_forensics(state, request_id)
+        _save_state(state)
+        if result["success"]:
             set_workspace(state, ["MESSAGE_2115", "MESSAGE_METADATA"])
             _save_state(state)
             st.rerun()
+        else:
+            st.session_state.memory_forensic_flash = result["message"]
+            st.rerun()
+    forensic_flash = st.session_state.pop("memory_forensic_flash", None)
+    if forensic_flash:
+        st.warning(forensic_flash)
+        hint = get_adaptive_hint(state, "inspect_message")
+        if hint:
+            st.info(f"에코 보조 분석 · {hint}")
 
 
 def _render_initial_hypothesis(state: MemoryState) -> None:
@@ -213,7 +294,7 @@ def _render_connection(state: MemoryState, phase: str) -> None:
     _render_evidence_cards(expected)
     relation = st.selectbox(
         "두 자료 사이에서 가장 중요한 관계는 무엇입니까?",
-        options=list(RELATIONS),
+        options=RELATION_OPTION_ORDER[phase],
         format_func=lambda item: RELATIONS[item],
         index=None,
         key=f"memory_relation_{phase}",
@@ -225,6 +306,22 @@ def _render_connection(state: MemoryState, phase: str) -> None:
         _save_state(state)
         st.session_state.memory_connection_flash = result
         st.rerun()
+
+
+def _render_message_hypothesis_result() -> None:
+    st.markdown("### 21시 15분 가설 대조 결과")
+    columns = st.columns(3)
+    results = (
+        ("실시간 작성", "배제", "21시 15분에는 사용자 작성 이벤트가 없었다."),
+        ("생전 예약발송", "지지", "이전 기기 세션에서 작성과 예약 등록이 확인됐다."),
+        ("제3자 전송", "배제", "예약 이후 수정이나 외부 접속 흔적이 없었다."),
+    )
+    for column, (label, status, reason) in zip(columns, results):
+        with column:
+            with st.container(border=True):
+                st.caption(label)
+                st.markdown(f"**{status}**")
+                st.write(reason)
 
 
 def _render_archive(state: MemoryState, show_ids: bool = False) -> None:
@@ -270,25 +367,25 @@ def _render_final(state: MemoryState) -> None:
     with st.form("memory_final_reconstruction"):
         alive = st.radio(
             "1. 현재 기록에서 마지막으로 직접 확인된 생존 시각은?",
-            ("19:55", "21:15", "22:30"), index=None,
+            ("21:15", "19:55", "22:30"), index=None, key="memory_final_alive",
         )
         message = st.radio(
             "2. 21시 15분 메시지가 증명하는 것은?",
-            ("AUTO_SENT_AT_2115", "ALIVE_AT_2115", "CULPRIT_SENT_MESSAGE"),
+            ("ALIVE_AT_2115", "CULPRIT_SENT_MESSAGE", "AUTO_SENT_AT_2115"),
             format_func=lambda item: {
                 "AUTO_SENT_AT_2115": "예약 메시지가 해당 시각 자동 전송됨",
                 "ALIVE_AT_2115": "최종인이 해당 시각 살아 있었음",
                 "CULPRIT_SENT_MESSAGE": "범인이 사후에 메시지를 전송함",
-            }[item], index=None,
+            }[item], index=None, key="memory_final_message",
         )
         conclusion = st.radio(
             "3. 현재 가능한 결론은?",
-            ("DEATH_TIME_REQUIRES_MORE_RECORDS", "DIED_AT_2115", "CULPRIT_IDENTIFIED"),
+            ("DEATH_TIME_REQUIRES_MORE_RECORDS", "CULPRIT_IDENTIFIED", "DIED_AT_2115"),
             format_func=lambda item: {
                 "DEATH_TIME_REQUIRES_MORE_RECORDS": "21:15는 생존 하한선이 아니며 정확한 사망시각에는 추가 기록이 필요함",
                 "DIED_AT_2115": "최종인은 정확히 21:15에 사망함",
                 "CULPRIT_IDENTIFIED": "현재 기록만으로 범인이 확정됨",
-            }[item], index=None,
+            }[item], index=None, key="memory_final_conclusion",
         )
         submitted = st.form_submit_button("재구성 제출", type="primary")
     if submitted:
@@ -301,4 +398,6 @@ def _render_final(state: MemoryState) -> None:
         if result["solved"]:
             st.rerun()
         else:
-            st.error("현재 자료가 증명하는 범위를 다시 구분해 보세요. 오답은 상태를 초기화하지 않으며 재시도할 수 있습니다.")
+            st.error("일부 판단이 확보한 기록의 범위를 벗어났습니다. 진행 상태는 유지됩니다.")
+            for message in result["feedback"]:
+                st.warning(message)
