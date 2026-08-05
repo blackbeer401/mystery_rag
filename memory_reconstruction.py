@@ -35,12 +35,16 @@ class Claim:
 
 @dataclass
 class MemoryState:
+    schema_version: int = 1
+    episode_id: str = "MESSAGE_2115"
     scene_started: bool = False
     initial_hypothesis_id: str | None = None
+    forensic_request_attempt_ids: list[str] = field(default_factory=list)
     unlocked_evidence_ids: list[str] = field(default_factory=lambda: list(INITIAL_EVIDENCE_IDS))
     workspace_ids: list[str] = field(default_factory=list)
     unlocked_claim_ids: list[str] = field(default_factory=list)
     completed_connection_ids: list[str] = field(default_factory=list)
+    connection_attempt_log: list[str] = field(default_factory=list)
     forensic_complete: bool = False
     attempts: int = 0
     completed: bool = False
@@ -105,10 +109,10 @@ EVIDENCE = {
         "처음부터 공개", ("CLAIM_CONFIRMED_WINDOW",),
     ),
     "MESSAGE_METADATA": Evidence(
-        "MESSAGE_METADATA", "메시지 예약발송 메타데이터",
-        "메시지는 최종인이 생전에 정상 업무 목적으로 작성하고 21시 15분 자동 발송을 설정했다. 해당 시각에는 예약된 전송만 실행됐다.",
+        "MESSAGE_METADATA", "메시지 작업 이력 및 실행 로그",
+        "작성 이벤트와 예약 등록은 최종인의 정상 기기 세션에서 21시 15분 이전에 완료됐다. 21시 15분 실행 주체는 사용자 계정이 아니라 예약발송 시스템이며, 등록 이후 본문 수정이나 외부 접속 흔적은 없다.",
         "객관 기록", ("최종인", "박소영"), "작성·예약 시각 별도 / 전송 21:15",
-        "작성·예약과 자동 전송이 서로 다른 시점의 사건이다.",
+        "작성·예약과 자동 전송이 별개의 이벤트로 기록됐다.",
         "정확한 사망시각과 범인은 알 수 없다.",
         "MESSAGE_2115를 작업대에 놓고 포렌식 분석", ("CLAIM_MESSAGE_NOT_SURVIVAL",),
     ),
@@ -139,6 +143,19 @@ CONNECTION_RULES = {
     (frozenset(("WITNESS_1955", "DISCOVERY_2320")), "LAST_SEEN_VS_DISCOVERY"): (
         "CONNECTION_CONFIRMED_WINDOW", "CLAIM_CONFIRMED_WINDOW"
     ),
+}
+
+CONNECTION_FEEDBACK = {
+    frozenset(("MESSAGE_2115", "MESSAGE_METADATA")): {
+        "SAME_EVENT": "두 자료는 같은 메시지를 다루지만, 그것만으로 수신 시각이 생존 시각인지 설명되지는 않습니다.",
+        "ONE_PROVES_OTHER": "메타데이터는 메시지의 존재가 아니라 생성과 전송 방식의 차이를 보여줍니다.",
+        "LAST_SEEN_VS_DISCOVERY": "이 두 자료는 목격과 발견 기록이 아닙니다. 각 자료에 기록된 시각의 성격을 다시 비교하십시오.",
+    },
+    frozenset(("WITNESS_1955", "DISCOVERY_2320")): {
+        "SAME_EVENT": "두 기록은 서로 다른 시점의 사건입니다. 하나는 대화이고 다른 하나는 시신 발견입니다.",
+        "ONE_PROVES_OTHER": "19시 55분의 목격은 23시 20분 발견 전까지 계속 살아 있었다는 사실을 증명하지 않습니다.",
+        "RECEIPT_VS_SURVIVAL": "이 자료에는 메시지 수신 기록이 없습니다. 마지막 생존 확인과 발견의 차이에 집중하십시오.",
+    },
 }
 
 FINAL_ANSWERS = {
@@ -185,9 +202,32 @@ def get_memory_phase(state: MemoryState) -> str:
 
 INITIAL_HYPOTHESES = {
     "ALIVE_AT_2115": "메시지를 직접 보냈으므로 21시 15분까지 살아 있었다",
-    "DELIVERY_ONLY": "메시지가 21시 15분에 도착했다는 사실만 확실하다",
+    "DELIVERY_ONLY": "확실한 것은 메시지가 21시 15분에 도착했다는 사실뿐이다",
     "SOMEONE_ELSE_SENT": "다른 사람이 피해자의 기기로 메시지를 보냈다",
-    "UNDECIDED": "작성·전송 기록을 보기 전에는 판단을 보류한다",
+    "UNDECIDED": "현재 정보만으로는 작성 방식과 시점을 판단할 수 없다",
+}
+
+FORENSIC_REQUESTS = {
+    "CREATION_METADATA": {
+        "label": "메시지 작업 이력 및 실행 로그",
+        "success": True,
+        "feedback": "작성, 예약 등록, 실제 전송이 각각 언제·어떤 주체로 실행됐는지 비교합니다.",
+    },
+    "DELIVERY_RECEIPT": {
+        "label": "박소영 기기의 수신 확인서",
+        "success": False,
+        "feedback": "수신 확인서는 메시지가 도착했다는 사실만 반복합니다. 작성 시점과 조작 주체를 구분하지 못합니다.",
+    },
+    "WRITING_STYLE": {
+        "label": "과거 업무 메시지와 문체 비교",
+        "success": False,
+        "feedback": "문체는 작성자를 추정하는 참고자료지만, 작성 시점이나 21시 15분의 실행 주체를 판별하는 기계 기록은 아닙니다.",
+    },
+    "CALL_HISTORY": {
+        "label": "21시 전후 통화 내역",
+        "success": False,
+        "feedback": "통화 여부는 메시지가 생성되고 전송된 방식을 직접 설명하지 못합니다.",
+    },
 }
 
 
@@ -197,6 +237,27 @@ def record_initial_hypothesis(state: MemoryState, hypothesis_id: str) -> None:
     if hypothesis_id not in INITIAL_HYPOTHESES:
         raise ValueError("등록되지 않은 초기 판단입니다.")
     state.initial_hypothesis_id = hypothesis_id
+
+
+def request_message_forensics(
+    state: MemoryState,
+    request_id: str,
+) -> dict[str, object]:
+    if request_id not in FORENSIC_REQUESTS:
+        raise ValueError("등록되지 않은 포렌식 요청입니다.")
+    if "MESSAGE_2115" not in state.workspace_ids:
+        raise ValueError("메시지 기록을 먼저 선택해야 합니다.")
+    if request_id not in state.forensic_request_attempt_ids:
+        state.forensic_request_attempt_ids.append(request_id)
+    request = FORENSIC_REQUESTS[request_id]
+    if not request["success"]:
+        return {"success": False, "message": request["feedback"]}
+    evidence = run_message_forensics(state)
+    return {
+        "success": True,
+        "message": request["feedback"],
+        "evidence_id": evidence.id,
+    }
 
 
 def set_workspace(state: MemoryState, evidence_ids: Iterable[str]) -> None:
@@ -209,12 +270,22 @@ def set_workspace(state: MemoryState, evidence_ids: Iterable[str]) -> None:
 
 
 def can_run_message_forensics(state: MemoryState) -> bool:
-    return "MESSAGE_2115" in state.workspace_ids and not state.forensic_complete
+    return (
+        "MESSAGE_2115" in state.workspace_ids
+        and "CREATION_METADATA" in state.forensic_request_attempt_ids
+        and not state.forensic_complete
+    )
 
 
 def run_message_forensics(state: MemoryState) -> Evidence:
-    if not can_run_message_forensics(state):
+    if state.forensic_complete:
+        raise ValueError("메시지 포렌식은 이미 완료됐습니다.")
+    if "MESSAGE_2115" not in state.workspace_ids:
         raise ValueError("MESSAGE_2115를 작업대에 놓아야 포렌식 분석을 실행할 수 있습니다.")
+    if "CREATION_METADATA" not in state.forensic_request_attempt_ids:
+        raise ValueError(
+            "메시지 생성·예약 작업 기록을 포렌식 대상으로 선택해야 합니다."
+        )
     state.forensic_complete = True
     if METADATA_ID not in state.unlocked_evidence_ids:
         state.unlocked_evidence_ids.append(METADATA_ID)
@@ -228,13 +299,54 @@ def connect_workspace(state: MemoryState, relation_id: str) -> dict[str, object]
         return {"success": False, "message": "연결할 자료 두 개를 작업대에 놓아야 합니다."}
     rule = CONNECTION_RULES.get((frozenset(state.workspace_ids), relation_id))
     if rule is None:
-        return {"success": False, "message": "이 관계로는 현재 기록의 공백을 해소할 수 없습니다."}
+        current_pair = frozenset(state.workspace_ids)
+        if current_pair in CONNECTION_FEEDBACK:
+            attempt_key = "+".join(sorted(state.workspace_ids)) + ":" + relation_id
+            if attempt_key not in state.connection_attempt_log:
+                state.connection_attempt_log.append(attempt_key)
+        feedback = CONNECTION_FEEDBACK.get(
+            current_pair,
+            {},
+        ).get(
+            relation_id,
+            "이 관계로는 현재 기록의 공백을 해소할 수 없습니다.",
+        )
+        return {"success": False, "message": feedback}
     connection_id, claim_id = rule
     if connection_id not in state.completed_connection_ids:
         state.completed_connection_ids.append(connection_id)
     if claim_id not in state.unlocked_claim_ids:
         state.unlocked_claim_ids.append(claim_id)
     return {"success": True, "message": CLAIMS[claim_id].explanation, "claim_id": claim_id}
+
+
+def get_adaptive_hint(state: MemoryState, phase: str) -> str | None:
+    """반복 실패 때만 정답을 직접 말하지 않는 단계형 힌트를 반환한다."""
+    if phase == "inspect_message":
+        wrong_count = sum(
+            not FORENSIC_REQUESTS[item]["success"]
+            for item in state.forensic_request_attempt_ids
+        )
+        if wrong_count >= 2:
+            return "도착 여부를 재확인하기보다 작성·예약·전송을 서로 다른 이벤트로 나눌 수 있는 기록이 필요합니다."
+        if wrong_count == 1:
+            return "서로 다른 설명이 각기 다른 결과를 남기는 기록이 무엇인지 생각해 보십시오."
+        return None
+    pair_ids = {
+        "connect_message": {"MESSAGE_2115", "MESSAGE_METADATA"},
+        "connect_window": {"WITNESS_1955", "DISCOVERY_2320"},
+    }
+    if phase not in pair_ids:
+        return None
+    prefix = "+".join(sorted(pair_ids[phase])) + ":"
+    wrong_count = sum(item.startswith(prefix) for item in state.connection_attempt_log)
+    if wrong_count >= 2 and phase == "connect_message":
+        return "21시 15분에 실행된 행위와 그보다 먼저 완료된 행위를 구분하십시오."
+    if wrong_count >= 2 and phase == "connect_window":
+        return "살아 있음을 확인한 시각과 사망을 발견한 시각 사이의 공백은 그 자체로 채워지지 않습니다."
+    if wrong_count == 1:
+        return "두 카드가 각각 확정하는 사건의 종류와 시각을 따로 읽어 보십시오."
+    return None
 
 
 def can_submit_reconstruction(state: MemoryState) -> bool:
@@ -249,15 +361,31 @@ def submit_reconstruction(state: MemoryState, answers: dict[str, str]) -> dict[s
     solved = all(checks.values())
     if solved:
         state.completed = True
-    return {"solved": solved, "checks": checks, "attempt": state.attempts}
+    feedback = {
+        "last_confirmed_alive": "메시지 수신은 직접 목격이 아닙니다. 사람이 최종인을 마지막으로 직접 확인한 기록을 다시 찾으십시오.",
+        "message_proves": "이 기록이 확정하는 것은 21시 15분의 실행 방식입니다. 그 시각의 생존이나 전송자의 범행까지 확장할 수 없습니다.",
+        "possible_conclusion": "현재 기록은 잘못된 생존 하한선만 제거합니다. 정확한 사망시각과 범인은 다음 기록 없이는 확정할 수 없습니다.",
+    }
+    return {
+        "solved": solved,
+        "checks": checks,
+        "feedback": [feedback[key] for key, correct in checks.items() if not correct],
+        "attempt": state.attempts,
+    }
 
 
 def _validate_state(state: MemoryState) -> None:
+    if state.schema_version != 1:
+        raise ValueError("지원하지 않는 기억 복원 저장 버전입니다.")
+    if state.episode_id != "MESSAGE_2115":
+        raise ValueError("다른 에피소드의 저장 상태는 불러올 수 없습니다.")
     if (
         state.initial_hypothesis_id is not None
         and state.initial_hypothesis_id not in INITIAL_HYPOTHESES
     ):
         raise ValueError("등록되지 않은 초기 판단이 저장되어 있습니다.")
+    if not set(state.forensic_request_attempt_ids).issubset(FORENSIC_REQUESTS):
+        raise ValueError("등록되지 않은 포렌식 요청이 저장되어 있습니다.")
     if not set(state.unlocked_evidence_ids).issubset(EVIDENCE):
         raise ValueError("상태에 존재하지 않는 자료 ID가 있습니다.")
     if not set(state.workspace_ids).issubset(state.unlocked_evidence_ids):
@@ -269,6 +397,16 @@ def _validate_state(state: MemoryState) -> None:
     allowed_connections = {rule[0] for rule in CONNECTION_RULES.values()}
     if not set(state.completed_connection_ids).issubset(allowed_connections):
         raise ValueError("상태에 존재하지 않는 연결 ID가 있습니다.")
+    valid_attempts = {
+        "+".join(sorted(pair)) + ":" + relation
+        for pair in (
+            {"MESSAGE_2115", "MESSAGE_METADATA"},
+            {"WITNESS_1955", "DISCOVERY_2320"},
+        )
+        for relation in RELATIONS
+    }
+    if not set(state.connection_attempt_log).issubset(valid_attempts):
+        raise ValueError("등록되지 않은 연결 시도가 저장되어 있습니다.")
     if state.forensic_complete != (METADATA_ID in state.unlocked_evidence_ids):
         raise ValueError("메시지 포렌식 상태와 메타데이터 해금 상태가 일치하지 않습니다.")
     claim_connections = {
