@@ -38,8 +38,8 @@ def analyze_hypothesis(state: MemoryState, text: str, client: Any = None) -> dic
         records = [EVIDENCE[item] for item in allowed_sources]
         prompt = {
             "hypothesis": hypothesis,
-            "allowed_sources": [record.__dict__ for record in records],
-            "allowed_claim_ids": list(CLAIMS),
+            "allowed_sources": [_public_record(record) for record in records],
+            "allowed_claim_ids": list(state.unlocked_claim_ids),
             "required_schema": SAFE_RESPONSE,
         }
         response = api_client.responses.create(
@@ -59,7 +59,7 @@ def validate_echo_response(state: MemoryState, value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != set(SAFE_RESPONSE):
         return SAFE_RESPONSE.copy()
     allowed_sources = set(state.workspace_ids)
-    allowed_claims = set(CLAIMS)
+    allowed_claims = set(state.unlocked_claim_ids)
     id_fields = {
         "supported_claim_ids": allowed_claims,
         "conflicting_claim_ids": allowed_claims,
@@ -77,7 +77,10 @@ def validate_echo_response(state: MemoryState, value: Any) -> dict[str, Any]:
 
 def _offline_analysis(state: MemoryState, hypothesis: str) -> dict[str, Any]:
     sources = list(state.workspace_ids)
-    inferred = _infer_claim_ids(hypothesis)
+    inferred = [
+        item for item in _infer_claim_ids(hypothesis)
+        if item in state.unlocked_claim_ids
+    ]
     return {
         "summary": (
             "판단 가능: 선택한 자료가 명시하는 시각과 사건은 비교할 수 있습니다. "
@@ -85,7 +88,10 @@ def _offline_analysis(state: MemoryState, hypothesis: str) -> dict[str, Any]:
         ),
         "supported_claim_ids": inferred,
         "conflicting_claim_ids": [],
-        "unknown_claim_ids": [item for item in CLAIMS if item not in inferred],
+        "unknown_claim_ids": [
+            item for item in state.unlocked_claim_ids
+            if item not in inferred
+        ],
         "source_ids": sources,
         "next_action_id": None,
     }
@@ -118,3 +124,15 @@ def _infer_claim_ids(text: str) -> list[str]:
 def _openai_client():
     from openai import OpenAI
     return OpenAI()
+
+
+def _public_record(record) -> dict[str, Any]:
+    """에코에는 플레이어 화면에 공개된 원시 기록 필드만 전달한다."""
+    return {
+        "id": record.id,
+        "title": record.title,
+        "body": record.body,
+        "source_type": record.source_type,
+        "people": list(record.people),
+        "time": record.time,
+    }
